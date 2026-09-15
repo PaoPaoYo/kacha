@@ -82,11 +82,11 @@ struct SelectionView: View {
                             }
                             .environment(\.adjustEnder) { adjustKind = nil }
 
-                        // 右下角按钮组（液态玻璃）：保存（复制左侧 44pt）+ 复制；位置 clamp——下方空间不足时收进选区内侧
+                        // 右下角按钮组（液态玻璃胶囊文字钮）：保存（复制左侧 12pt）+ 复制；位置 clamp——下方空间不足时收进选区内侧
                         let centers = Self.buttonCenters(sel: sel, bounds: geo.size)
-                        ToolbarButton(icon: "square.and.arrow.down", action: save)
+                        ToolbarButton(label: "保存", action: save)
                             .position(x: centers.save.x, y: centers.save.y)
-                        ToolbarButton(icon: "doc.on.doc", action: confirm)
+                        ToolbarButton(label: "复制", action: confirm)
                             .position(x: centers.copy.x, y: centers.copy.y)
                     }
                 }
@@ -250,21 +250,21 @@ struct SelectionView: View {
     }
 
     /// 按钮组中心位置（单一公式源，按钮 position / 光标命中 / 父层手势 gate 三处共用）：
-    /// 复制按钮在选区右下角外侧，保存按钮在其左 44pt（32 按钮 + 12 间距）；
-    /// 右缘 clamp 到屏内、左缘 clamp ≥ 20，下方空间不足时收进选区内侧（brief 公式）
+    /// 复制按钮在选区右下角外侧，保存按钮在其左 68pt（56 按钮 + 12 间距）；
+    /// 右缘 clamp 到屏内、左缘 clamp ≥ 36（半钮宽 28 + 8 边距），下方空间不足时收进选区内侧
     static func buttonCenters(sel: CGRect, bounds: CGSize) -> (save: CGPoint, copy: CGPoint) {
-        let spacing: CGFloat = 44
-        let copyX = min(sel.maxX - 16, bounds.width - 20)
-        let saveX = max(20, copyX - spacing)
+        let spacing: CGFloat = 68
+        let copyX = min(sel.maxX - 16, bounds.width - 36)
+        let saveX = max(36, copyX - spacing)
         let belowFits = sel.maxY + 20 + 16 <= bounds.height
         let y = belowFits ? sel.maxY + 20 : sel.maxY - 20
         return (CGPoint(x: saveX, y: y), CGPoint(x: copyX, y: y))
     }
 
-    /// 两个按钮的 32×32 命中框（与按钮 position 同一公式，供光标判定与父层手势 gate 使用）
+    /// 两个按钮的 56×28 命中框（与按钮 position 同一公式，供光标判定与父层手势 gate 使用）
     private static func buttonFrames(sel: CGRect, in size: CGSize) -> [CGRect] {
         let c = buttonCenters(sel: sel, bounds: size)
-        return [c.save, c.copy].map { CGRect(x: $0.x - 16, y: $0.y - 16, width: 32, height: 32) }
+        return [c.save, c.copy].map { CGRect(x: $0.x - 28, y: $0.y - 14, width: 56, height: 28) }
     }
 
     /// 单一光标决策点：mouseMoved / leftMouseDragged 统一在此判定（cursorRect 已停用）
@@ -346,21 +346,21 @@ private struct SizeBadge: View {
     }
 }
 
-/// 液态玻璃圆钮（32×32，SF Symbol 图标）：保存 / 复制共用规格
+/// 液态玻璃胶囊文字钮（56×28）：保存 / 复制共用规格
 private struct ToolbarButton: View {
-    let icon: String
+    let label: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 14, weight: .medium))
+            Text(label)
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.primary)
-                .frame(width: 32, height: 32)
+                .frame(width: 56, height: 28)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .glassEffect(in: Circle())
+        .glassEffect(in: Capsule())
     }
 }
 
