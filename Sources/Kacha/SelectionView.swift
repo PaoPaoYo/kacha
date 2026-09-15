@@ -67,11 +67,9 @@ struct SelectionView: View {
                     }
             )
             .onAppear {
-                NSCursor.crosshair.push()
                 NSLog("Kacha SelectionView onAppear: screenPointSize=%@, imagePixelSize=%@, geoSize=%@", NSStringFromSize(frame.screenPointSize), NSStringFromSize(frame.imagePixelSize), NSStringFromSize(geo.size))
                 diag("SelectionView onAppear: screenPointSize=\(NSStringFromSize(frame.screenPointSize)) imagePixelSize=\(NSStringFromSize(frame.imagePixelSize)) geoSize=\(NSStringFromSize(geo.size))")
             }
-            .onDisappear { NSCursor.pop() }
         }
         .onExitCommand(perform: onCancel)
     }

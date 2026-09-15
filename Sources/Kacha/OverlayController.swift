@@ -38,7 +38,7 @@ final class OverlayController {
                 self?.dismissAll()
                 onCancel()
             }
-            let hosting = NSHostingView(rootView: view)
+            let hosting = CrosshairHostingView(rootView: view)
             hosting.frame = panel.contentView?.bounds ?? frame.screen.frame
             hosting.autoresizingMask = [.width, .height]
             panel.contentView = hosting
@@ -77,4 +77,11 @@ final class OverlayController {
 /// borderless 窗口也要能成为 key window（接收 ESC）
 final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
+}
+
+/// 鼠标进入窗口区域时显示十字光标（AppKit 原生 cursorRect 机制，比 push/pop 可靠）
+final class CrosshairHostingView<Content: View>: NSHostingView<Content> {
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .crosshair)
+    }
 }
