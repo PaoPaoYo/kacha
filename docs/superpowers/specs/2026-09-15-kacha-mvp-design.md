@@ -35,6 +35,7 @@ Kacha（咔嚓）是一个 macOS 截图工具。按下全局热键后屏幕冻�
 | `SelectionView` | 冻结帧 + 35% 黑遮罩挖洞 + 选区白边 + 毛玻璃尺寸标签胶囊；十字光标 |
 | `SelectionGeometry` | 纯逻辑坐标换算：NSScreen 左下原点 ↔ CGImage 像素、point ↔ pixel、任意方向拖拽归一化、最小选区阈值 |
 | `ClipboardService` | 写 PNG + TIFF 到 `NSPasteboard` |
+| `CaptureCoordinator` | 串联全流程；含权限引导弹窗（NSAlert + 直达系统设置）与错误提示 |
 
 ### 数据流
 
@@ -82,7 +83,7 @@ kacha/
     SelectionView.swift
     SelectionGeometry.swift  # 纯逻辑，可测试
     ClipboardService.swift
-    PermissionGuide.swift
+    CaptureCoordinator.swift
   Tests/KachaTests/
     SelectionGeometryTests.swift
   Makefile                   # swift build → 打包 kacha.app
