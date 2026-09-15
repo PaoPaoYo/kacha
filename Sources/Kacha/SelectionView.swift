@@ -54,9 +54,17 @@ struct SelectionView: View {
                             .frame(width: sel.width, height: sel.height)
                             .position(x: sel.midX, y: sel.midY)
                             .contentShape(Rectangle())
+                            .onHover { hovering in
+                                if hovering {
+                                    NSCursor.openHand.set()
+                                } else {
+                                    NSCursor.crosshair.set()
+                                }
+                            }
                             .gesture(
                                 DragGesture(minimumDistance: 1, coordinateSpace: .named("sel"))
                                     .onChanged { value in
+                                        NSCursor.closedHand.set()
                                         if adjustKind == nil {
                                             beginAdjust(.move, at: value.startLocation)
                                         }
@@ -84,12 +92,28 @@ struct SelectionView: View {
                 // 空白处按下拖拽：画新选区（minimumDistance 0：原地点击也走 onEnded）
                 DragGesture(minimumDistance: 0, coordinateSpace: .named("sel"))
                     .onChanged { value in
+                        // 调整态下，选区内（含手柄命中区外扩 10pt）起点的触摸归子层（move/手柄），父层忽略，
+                        // 避免 minDist-0 的父层手势与子层同时跟踪污染 dragStart/dragCurrent
+                        let inChildZone: Bool
+                        if phase == .adjusting {
+                            inChildZone = selection.insetBy(dx: -10, dy: -10).contains(value.startLocation)
+                        } else {
+                            inChildZone = false
+                        }
+                        if inChildZone { return }
                         // 调整态下重画不改写 phase：松开无效时仍按调整态处理（保留当前选区）
                         if phase != .adjusting { phase = .dragging }
                         dragStart = value.startLocation
                         dragCurrent = value.location
                     }
                     .onEnded { value in
+                        let inChildZone: Bool
+                        if phase == .adjusting {
+                            inChildZone = selection.insetBy(dx: -10, dy: -10).contains(value.startLocation)
+                        } else {
+                            inChildZone = false
+                        }
+                        if inChildZone { return }
                         defer { dragStart = nil; dragCurrent = nil }
                         let rect = SelectionGeometry.normalize(from: value.startLocation, to: value.location)
                         if SelectionGeometry.isValid(rect) {
@@ -277,9 +301,17 @@ private struct Handle: View {
             .frame(width: 16, height: 16)   // 扩大命中区
             .contentShape(Rectangle())
             .position(position)
+            .onHover { hovering in
+                if hovering {
+                    kind.resizeCursor.set()
+                } else {
+                    NSCursor.crosshair.set()
+                }
+            }
             .gesture(
                 DragGesture(minimumDistance: 1, coordinateSpace: .named("sel"))
                     .onChanged { value in
+                        kind.resizeCursor.set()   // 拖动中保持方向光标
                         if !began {
                             began = true
                             starter(kind, value.startLocation)
@@ -291,5 +323,24 @@ private struct Handle: View {
                         ender()
                     }
             )
+    }
+}
+
+// MARK: - 方向光标
+
+@MainActor
+private extension SelectionHandleKind {
+    /// 手柄对应的方向光标：边缘用系统左右/上下光标；四角用系统 frameResize 对角光标
+    /// （macOS 15+ API；原设想的 NSCursor(rawValue:) 在 AppKit 不存在，此为同一意图的系统 API）
+    var resizeCursor: NSCursor {
+        switch self {
+        case .left, .right: return .resizeLeftRight
+        case .top, .bottom: return .resizeUpDown
+        case .topLeft: return .frameResize(position: .topLeft, directions: .all)
+        case .topRight: return .frameResize(position: .topRight, directions: .all)
+        case .bottomLeft: return .frameResize(position: .bottomLeft, directions: .all)
+        case .bottomRight: return .frameResize(position: .bottomRight, directions: .all)
+        case .move: return .openHand
+        }
     }
 }
