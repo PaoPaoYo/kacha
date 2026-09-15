@@ -79,6 +79,19 @@ struct SelectionView: View {
                                 updateAdjust(to: point, in: geo.size)
                             }
                             .environment(\.adjustEnder) { adjustKind = nil }
+
+                        // 右下角确认按钮（液态玻璃）：位置 clamp——下方空间不足时收进选区内侧
+                        let badgeCenter = Self.badgeCenter(for: sel, in: geo.size)
+                        Button(action: confirm) {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .frame(width: 32, height: 32)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .glassEffect(in: Circle())
+                        .position(x: badgeCenter.x, y: badgeCenter.y)
                     }
                 }
             }
@@ -88,11 +101,13 @@ struct SelectionView: View {
                 // 空白处按下拖拽：画新选区（minimumDistance 0：原地点击也走 onEnded）
                 DragGesture(minimumDistance: 0, coordinateSpace: .named("sel"))
                     .onChanged { value in
-                        // 调整态下，选区内（含手柄命中区外扩 10pt）起点的触摸归子层（move/手柄），父层忽略，
-                        // 避免 minDist-0 的父层手势与子层同时跟踪污染 dragStart/dragCurrent
+                        // 调整态下，选区内（含手柄命中区外扩 10pt）或确认按钮上起点的触摸归子层（move/手柄/按钮），
+                        // 父层忽略，避免 minDist-0 的父层手势与子层同时跟踪污染 dragStart/dragCurrent
+                        //（按钮若被父层污染，dragStart 未清时会卡 confirm() 的 dragStart == nil 守卫）
                         let inChildZone: Bool
                         if phase == .adjusting {
                             inChildZone = selection.insetBy(dx: -10, dy: -10).contains(value.startLocation)
+                                || Self.badgeFrame(for: selection, in: geo.size).contains(value.startLocation)
                         } else {
                             inChildZone = false
                         }
@@ -125,6 +140,8 @@ struct SelectionView: View {
             .onChange(of: selection) { _, new in
                 cursorState.selection = new
                 cursorState.hasSelection = SelectionGeometry.isValid(new)
+                // 确认按钮 frame 与按钮 position 用同一公式；非调整态置 nil
+                cursorState.buttonFrame = phase == .adjusting ? Self.badgeFrame(for: new, in: geo.size) : nil
             }
             .onChange(of: geo.size.height) { _, new in
                 cursorState.viewHeight = new
@@ -231,6 +248,20 @@ struct SelectionView: View {
         return nil
     }
 
+    /// 确认按钮中心位置：选区右下角外侧，下方空间不足时收进选区内侧（brief 公式）
+    private static func badgeCenter(for sel: CGRect, in size: CGSize) -> CGPoint {
+        let x = min(sel.maxX - 16, size.width - 20)
+        let belowFits = sel.maxY + 20 + 16 <= size.height
+        let y = belowFits ? sel.maxY + 20 : sel.maxY - 20
+        return CGPoint(x: x, y: y)
+    }
+
+    /// 确认按钮的 32×32 命中框（与按钮 position 同一公式，供光标判定与父层手势 gate 使用）
+    private static func badgeFrame(for sel: CGRect, in size: CGSize) -> CGRect {
+        let c = badgeCenter(for: sel, in: size)
+        return CGRect(x: c.x - 16, y: c.y - 16, width: 32, height: 32)
+    }
+
     /// 单一光标决策点：mouseMoved / leftMouseDragged 统一在此判定（cursorRect 已停用）
     @MainActor
     private static func applyCursor(event: NSEvent, state: CursorState, screen: NSScreen) {
@@ -246,6 +277,11 @@ struct SelectionView: View {
         // b. 命中 8 手柄 → 对应方向缩放光标
         if let position = handlePosition(at: p, in: state.selection) {
             NSCursor.frameResize(position: position, directions: .all).set()
+            return
+        }
+        // b'. 悬停确认按钮 → pointingHand
+        if let bf = state.buttonFrame, bf.contains(p) {
+            NSCursor.pointingHand.set()
             return
         }
         // c. 选区内 → 拖动中合掌 / 悬停开掌
@@ -267,6 +303,7 @@ private final class CursorState {
     var hasSelection = false
     var selection: CGRect = .zero
     var viewHeight: CGFloat = 0
+    var buttonFrame: CGRect? = nil
 }
 
 /// 调整态可拖拽的部位：8 个手柄 + 选区内部（整体移动）
