@@ -103,6 +103,6 @@ private struct SizeBadge: View {
             .foregroundStyle(.primary)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(.ultraThinMaterial, in: Capsule())
+            .glassEffect(in: Capsule())
     }
 }
