@@ -1,5 +1,14 @@
 import SwiftUI
 
+/// 诊断落盘（append，UTF-8）：NSLog 进 unified log 不可靠，改写 /tmp/kacha_diag.txt
+/// （本机 MacOSX27.0 SDK 的 String.write(to:) 无 append: 参数，用读-拼-写实现 append）
+private func diag(_ line: String) {
+    let url = URL(fileURLWithPath: "/tmp/kacha_diag.txt")
+    var text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    text += line + "\n"
+    try? text.write(to: url, atomically: false, encoding: .utf8)
+}
+
 /// 单屏框选视图：冻结帧 + 35% 黑遮罩挖洞 + 1pt 白边 + 毛玻璃尺寸胶囊
 struct SelectionView: View {
     let frame: ScreenFrame
@@ -60,6 +69,7 @@ struct SelectionView: View {
             .onAppear {
                 NSCursor.crosshair.push()
                 NSLog("Kacha SelectionView onAppear: screenPointSize=%@, imagePixelSize=%@, geoSize=%@", NSStringFromSize(frame.screenPointSize), NSStringFromSize(frame.imagePixelSize), NSStringFromSize(geo.size))
+                diag("SelectionView onAppear: screenPointSize=\(NSStringFromSize(frame.screenPointSize)) imagePixelSize=\(NSStringFromSize(frame.imagePixelSize)) geoSize=\(NSStringFromSize(geo.size))")
             }
             .onDisappear { NSCursor.pop() }
         }
