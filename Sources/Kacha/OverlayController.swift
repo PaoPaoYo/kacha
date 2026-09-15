@@ -10,12 +10,18 @@ private func diag(_ line: String) {
     try? text.write(to: url, atomically: false, encoding: .utf8)
 }
 
+/// 用户完成框选后的动作：复制到剪贴板 / 保存为文件
+enum CaptureAction {
+    case copy
+    case save
+}
+
 @MainActor
 final class OverlayController {
     private var panels: [KeyablePanel] = []
 
-    /// 显示全部屏幕的覆盖窗；用户完成框选后回调裁剪好的图像
-    func show(frames: [ScreenFrame], onCapture: @escaping (CGImage) -> Void, onCancel: @escaping () -> Void) {
+    /// 显示全部屏幕的覆盖窗；用户完成框选后回调裁剪好的图像与所选动作
+    func show(frames: [ScreenFrame], onCapture: @escaping (CGImage, CaptureAction) -> Void, onCancel: @escaping () -> Void) {
         dismissAll()
         NSApp.activate(ignoringOtherApps: true)
 
@@ -33,7 +39,9 @@ final class OverlayController {
             panel.hidesOnDeactivate = false
 
             let view = SelectionView(frame: frame) { [weak self] pointRect in
-                self?.handleConfirm(frame: frame, pointRect: pointRect, onCapture: onCapture)
+                self?.handleConfirm(frame: frame, pointRect: pointRect, action: .copy, onCapture: onCapture)
+            } onSave: { [weak self] pointRect in
+                self?.handleConfirm(frame: frame, pointRect: pointRect, action: .save, onCapture: onCapture)
             } onCancel: { [weak self] in
                 self?.dismissAll()
                 onCancel()
@@ -58,7 +66,8 @@ final class OverlayController {
         panels.removeAll()
     }
 
-    private func handleConfirm(frame: ScreenFrame, pointRect: CGRect, onCapture: @escaping (CGImage) -> Void) {
+    /// 关闭全部覆盖窗 → 裁剪像素 → 带动作回调（复制 / 保存共用裁剪链路）
+    private func handleConfirm(frame: ScreenFrame, pointRect: CGRect, action: CaptureAction, onCapture: @escaping (CGImage, CaptureAction) -> Void) {
         dismissAll()
         let pixelRect = SelectionGeometry.pixelRect(
             pointRect: pointRect,
@@ -66,10 +75,10 @@ final class OverlayController {
             imagePixelSize: frame.imagePixelSize
         )
         if let cropped = frame.image.cropping(to: pixelRect) {
-            onCapture(cropped)
+            onCapture(cropped, action)
         } else {
             // 像素矩形越界（理论不该发生，pixelRect 已 clamp）：退回整帧
-            onCapture(frame.image)
+            onCapture(frame.image, action)
         }
     }
 }

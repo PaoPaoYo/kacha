@@ -5,8 +5,10 @@ import SwiftUI
 /// → 双击或回车确认，ESC 取消。
 struct SelectionView: View {
     let frame: ScreenFrame
-    /// 确认时回调：屏幕局部 point 选区（有效性已过滤）
+    /// 确认（复制）时回调：屏幕局部 point 选区（有效性已过滤）
     let onConfirm: (CGRect) -> Void
+    /// 保存时回调：屏幕局部 point 选区（有效性已过滤）
+    let onSave: (CGRect) -> Void
     let onCancel: () -> Void
 
     private enum Phase {
@@ -80,18 +82,12 @@ struct SelectionView: View {
                             }
                             .environment(\.adjustEnder) { adjustKind = nil }
 
-                        // 右下角确认按钮（液态玻璃）：位置 clamp——下方空间不足时收进选区内侧
-                        let badgeCenter = Self.badgeCenter(for: sel, in: geo.size)
-                        Button(action: confirm) {
-                            Image(systemName: "doc.on.doc")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(.primary)
-                                .frame(width: 32, height: 32)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .glassEffect(in: Circle())
-                        .position(x: badgeCenter.x, y: badgeCenter.y)
+                        // 右下角按钮组（液态玻璃）：保存（复制左侧 44pt）+ 复制；位置 clamp——下方空间不足时收进选区内侧
+                        let centers = Self.buttonCenters(sel: sel, bounds: geo.size)
+                        ToolbarButton(icon: "square.and.arrow.down", action: save)
+                            .position(x: centers.save.x, y: centers.save.y)
+                        ToolbarButton(icon: "doc.on.doc", action: confirm)
+                            .position(x: centers.copy.x, y: centers.copy.y)
                     }
                 }
             }
@@ -101,13 +97,13 @@ struct SelectionView: View {
                 // 空白处按下拖拽：画新选区（minimumDistance 0：原地点击也走 onEnded）
                 DragGesture(minimumDistance: 0, coordinateSpace: .named("sel"))
                     .onChanged { value in
-                        // 调整态下，选区内（含手柄命中区外扩 10pt）或确认按钮上起点的触摸归子层（move/手柄/按钮），
+                        // 调整态下，选区内（含手柄命中区外扩 10pt）或任一按钮上起点的触摸归子层（move/手柄/两按钮），
                         // 父层忽略，避免 minDist-0 的父层手势与子层同时跟踪污染 dragStart/dragCurrent
-                        //（按钮若被父层污染，dragStart 未清时会卡 confirm() 的 dragStart == nil 守卫）
+                        //（按钮若被父层污染，dragStart 未清时会卡 confirm()/save() 的 dragStart == nil 守卫）
                         let inChildZone: Bool
                         if phase == .adjusting {
                             inChildZone = selection.insetBy(dx: -10, dy: -10).contains(value.startLocation)
-                                || Self.badgeFrame(for: selection, in: geo.size).contains(value.startLocation)
+                                || Self.buttonFrames(sel: selection, in: geo.size).contains { $0.contains(value.startLocation) }
                         } else {
                             inChildZone = false
                         }
@@ -140,8 +136,8 @@ struct SelectionView: View {
             .onChange(of: selection) { _, new in
                 cursorState.selection = new
                 cursorState.hasSelection = SelectionGeometry.isValid(new)
-                // 确认按钮 frame 与按钮 position 用同一公式；非调整态置 nil
-                cursorState.buttonFrame = phase == .adjusting ? Self.badgeFrame(for: new, in: geo.size) : nil
+                // 两按钮 frame 与按钮 position 用同一公式；非调整态置空
+                cursorState.buttonFrames = phase == .adjusting ? Self.buttonFrames(sel: new, in: geo.size) : []
             }
             .onChange(of: geo.size.height) { _, new in
                 cursorState.viewHeight = new
@@ -228,6 +224,11 @@ struct SelectionView: View {
         onConfirm(selection)
     }
 
+    private func save() {
+        guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection) else { return }
+        onSave(selection)
+    }
+
     // MARK: 光标（NSEvent monitor 单一决策点）
 
     /// 8 手柄命中判定（每点 ±8pt 方形命中区），返回对应系统 frameResize 位置
@@ -248,18 +249,22 @@ struct SelectionView: View {
         return nil
     }
 
-    /// 确认按钮中心位置：选区右下角外侧，下方空间不足时收进选区内侧（brief 公式）
-    private static func badgeCenter(for sel: CGRect, in size: CGSize) -> CGPoint {
-        let x = min(sel.maxX - 16, size.width - 20)
-        let belowFits = sel.maxY + 20 + 16 <= size.height
+    /// 按钮组中心位置（单一公式源，按钮 position / 光标命中 / 父层手势 gate 三处共用）：
+    /// 复制按钮在选区右下角外侧，保存按钮在其左 44pt（32 按钮 + 12 间距）；
+    /// 右缘 clamp 到屏内、左缘 clamp ≥ 20，下方空间不足时收进选区内侧（brief 公式）
+    static func buttonCenters(sel: CGRect, bounds: CGSize) -> (save: CGPoint, copy: CGPoint) {
+        let spacing: CGFloat = 44
+        let copyX = min(sel.maxX - 16, bounds.width - 20)
+        let saveX = max(20, copyX - spacing)
+        let belowFits = sel.maxY + 20 + 16 <= bounds.height
         let y = belowFits ? sel.maxY + 20 : sel.maxY - 20
-        return CGPoint(x: x, y: y)
+        return (CGPoint(x: saveX, y: y), CGPoint(x: copyX, y: y))
     }
 
-    /// 确认按钮的 32×32 命中框（与按钮 position 同一公式，供光标判定与父层手势 gate 使用）
-    private static func badgeFrame(for sel: CGRect, in size: CGSize) -> CGRect {
-        let c = badgeCenter(for: sel, in: size)
-        return CGRect(x: c.x - 16, y: c.y - 16, width: 32, height: 32)
+    /// 两个按钮的 32×32 命中框（与按钮 position 同一公式，供光标判定与父层手势 gate 使用）
+    private static func buttonFrames(sel: CGRect, in size: CGSize) -> [CGRect] {
+        let c = buttonCenters(sel: sel, bounds: size)
+        return [c.save, c.copy].map { CGRect(x: $0.x - 16, y: $0.y - 16, width: 32, height: 32) }
     }
 
     /// 单一光标决策点：mouseMoved / leftMouseDragged 统一在此判定（cursorRect 已停用）
@@ -279,8 +284,8 @@ struct SelectionView: View {
             NSCursor.frameResize(position: position, directions: .all).set()
             return
         }
-        // b'. 悬停确认按钮 → pointingHand
-        if let bf = state.buttonFrame, bf.contains(p) {
+        // b'. 悬停保存/复制按钮 → pointingHand
+        if state.buttonFrames.contains(where: { $0.contains(p) }) {
             NSCursor.pointingHand.set()
             return
         }
@@ -303,7 +308,7 @@ private final class CursorState {
     var hasSelection = false
     var selection: CGRect = .zero
     var viewHeight: CGFloat = 0
-    var buttonFrame: CGRect? = nil
+    var buttonFrames: [CGRect] = []
 }
 
 /// 调整态可拖拽的部位：8 个手柄 + 选区内部（整体移动）
@@ -338,6 +343,24 @@ private struct SizeBadge: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .glassEffect(in: Capsule())
+    }
+}
+
+/// 液态玻璃圆钮（32×32，SF Symbol 图标）：保存 / 复制共用规格
+private struct ToolbarButton: View {
+    let icon: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.primary)
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .glassEffect(in: Circle())
     }
 }
 
