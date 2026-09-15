@@ -1,83 +1,182 @@
 import SwiftUI
 
-/// 诊断落盘（append，UTF-8）：NSLog 进 unified log 不可靠，改写 /tmp/kacha_diag.txt
-/// （本机 MacOSX27.0 SDK 的 String.write(to:) 无 append: 参数，用读-拼-写实现 append）
-private func diag(_ line: String) {
-    let url = URL(fileURLWithPath: "/tmp/kacha_diag.txt")
-    var text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-    text += line + "\n"
-    try? text.write(to: url, atomically: false, encoding: .utf8)
-}
-
-/// 单屏框选视图：冻结帧 + 35% 黑遮罩挖洞 + 1pt 白边 + 毛玻璃尺寸胶囊
+/// 单屏框选视图：冻结帧 + 35% 黑遮罩挖洞 + 1pt 白边 + 液态玻璃尺寸胶囊。
+/// 两段式交互：拖拽框选 → 松开进入调整态（手柄缩放 / 内部平移 / 外部重选）
+/// → 双击或回车确认，ESC 取消。
 struct SelectionView: View {
     let frame: ScreenFrame
-    /// 松开时回调：屏幕局部 point 选区（有效性已过滤）
+    /// 确认时回调：屏幕局部 point 选区（有效性已过滤）
     let onConfirm: (CGRect) -> Void
     let onCancel: () -> Void
 
+    private enum Phase {
+        case idle       // 尚未拖拽
+        case dragging   // 首次拖拽中
+        case adjusting  // 松开后二次调整
+    }
+
+    @State private var phase: Phase = .idle
     @State private var dragStart: CGPoint?
     @State private var dragCurrent: CGPoint?
+    @State private var selection: CGRect = .zero
+    @State private var adjustKind: SelectionHandleKind?
+    @State private var adjustOrigin: CGRect = .zero
+    @State private var adjustPoint: CGPoint = .zero
 
     var body: some View {
         GeometryReader { geo in
-            let selection = currentSelection
+            let sel = activeSelection
 
             ZStack(alignment: .topLeading) {
                 Image(nsImage: NSImage(cgImage: frame.image, size: frame.screenPointSize))
                     .resizable()
                     .frame(width: geo.size.width, height: geo.size.height)
 
-                // 35% 黑遮罩，选区处挖洞（evenOdd 填充）
-                DimmingMask(selection: selection)
+                DimmingMask(selection: sel)
                     .fill(.black.opacity(0.35), style: FillStyle(eoFill: true))
                     .allowsHitTesting(false)
 
-                if let selection, SelectionGeometry.isValid(selection) {
+                if let sel, SelectionGeometry.isValid(sel) {
                     Rectangle()
                         .strokeBorder(.white, lineWidth: 1)
-                        .frame(width: selection.width, height: selection.height)
-                        .position(x: selection.midX, y: selection.midY)
+                        .frame(width: sel.width, height: sel.height)
+                        .position(x: sel.midX, y: sel.midY)
                         .allowsHitTesting(false)
 
-                    SizeBadge(rect: selection)
-                        .position(
-                            x: min(selection.midX, geo.size.width - 60),
-                            y: max(selection.minY - 28, 26)
-                        )
+                    SizeBadge(rect: sel)
+                        .position(x: min(sel.midX, geo.size.width - 60),
+                                  y: max(sel.minY - 28, 26))
                         .allowsHitTesting(false)
+
+                    if phase == .adjusting {
+                        // 选区内：拖动整体移动 + 双击确认
+                        Color.clear
+                            .frame(width: sel.width, height: sel.height)
+                            .position(x: sel.midX, y: sel.midY)
+                            .contentShape(Rectangle())
+                            .gesture(
+                                DragGesture(minimumDistance: 1, coordinateSpace: .named("sel"))
+                                    .onChanged { value in
+                                        if adjustKind == nil {
+                                            beginAdjust(.move, at: value.startLocation)
+                                        }
+                                        updateAdjust(to: value.location, in: geo.size)
+                                    }
+                                    .onEnded { _ in adjustKind = nil }
+                            )
+                            .onTapGesture(count: 2) { confirm() }
+
+                        // 8 个缩放手柄（四角 + 四边中点）
+                        HandleLayer(selection: sel)
+                            .environment(\.adjustStarter) { kind, point in
+                                beginAdjust(kind, at: point)
+                            }
+                            .environment(\.adjustUpdater) { point in
+                                updateAdjust(to: point, in: geo.size)
+                            }
+                            .environment(\.adjustEnder) { adjustKind = nil }
+                    }
                 }
             }
+            .coordinateSpace(name: "sel")
             .contentShape(Rectangle())
             .gesture(
-                // minimumDistance 0：原地点击也走 onEnded → 无效选区 → 取消
-                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                // 空白处按下拖拽：画新选区（minimumDistance 0：原地点击也走 onEnded）
+                DragGesture(minimumDistance: 0, coordinateSpace: .named("sel"))
                     .onChanged { value in
-                        if dragStart == nil { dragStart = value.startLocation }
+                        // 调整态下重画不改写 phase：松开无效时仍按调整态处理（保留当前选区）
+                        if phase != .adjusting { phase = .dragging }
+                        dragStart = value.startLocation
                         dragCurrent = value.location
                     }
                     .onEnded { value in
                         defer { dragStart = nil; dragCurrent = nil }
                         let rect = SelectionGeometry.normalize(from: value.startLocation, to: value.location)
-                        guard SelectionGeometry.isValid(rect) else {
+                        if SelectionGeometry.isValid(rect) {
+                            selection = rect
+                            phase = .adjusting
+                        } else if phase != .adjusting {
+                            // 非调整态的误触（原地点击）才取消；调整态下无效点击保留当前选区
                             onCancel()
-                            return
                         }
-                        onConfirm(rect)
                     }
             )
+            .focusable()
+            .onKeyPress(.return) {
+                confirm()
+                return .handled
+            }
+            .onExitCommand(perform: onCancel)
             .onAppear {
                 NSLog("Kacha SelectionView onAppear: screenPointSize=%@, imagePixelSize=%@, geoSize=%@", NSStringFromSize(frame.screenPointSize), NSStringFromSize(frame.imagePixelSize), NSStringFromSize(geo.size))
-                diag("SelectionView onAppear: screenPointSize=\(NSStringFromSize(frame.screenPointSize)) imagePixelSize=\(NSStringFromSize(frame.imagePixelSize)) geoSize=\(NSStringFromSize(geo.size))")
             }
         }
-        .onExitCommand(perform: onCancel)
     }
 
-    private var currentSelection: CGRect? {
-        guard let dragStart, let dragCurrent else { return nil }
-        return SelectionGeometry.normalize(from: dragStart, to: dragCurrent)
+    // MARK: 状态推算
+
+    private var activeSelection: CGRect? {
+        // 进行中的拖拽优先展示（含调整态下的外部重画）；否则调整态展示已定选区
+        if let dragStart, let dragCurrent {
+            return SelectionGeometry.normalize(from: dragStart, to: dragCurrent)
+        }
+        if phase == .adjusting { return selection }
+        return nil
     }
+
+    // MARK: 调整逻辑
+
+    private func beginAdjust(_ kind: SelectionHandleKind, at point: CGPoint) {
+        adjustKind = kind
+        adjustOrigin = selection
+        adjustPoint = point
+    }
+
+    private func updateAdjust(to p: CGPoint, in bounds: CGSize) {
+        guard adjustKind != nil else { return }
+        let o = adjustOrigin
+        let minX = max(0, min(p.x, o.maxX - SelectionGeometry.minimumSize))
+        let minY = max(0, min(p.y, o.maxY - SelectionGeometry.minimumSize))
+        let maxX = min(bounds.width, max(p.x, o.minX + SelectionGeometry.minimumSize))
+        let maxY = min(bounds.height, max(p.y, o.minY + SelectionGeometry.minimumSize))
+        switch adjustKind {
+        case .topLeft:
+            selection = CGRect(x: minX, y: minY, width: o.maxX - minX, height: o.maxY - minY)
+        case .top:
+            selection = CGRect(x: o.minX, y: minY, width: o.width, height: o.maxY - minY)
+        case .topRight:
+            selection = CGRect(x: o.minX, y: minY, width: maxX - o.minX, height: o.maxY - minY)
+        case .right:
+            selection = CGRect(x: o.minX, y: o.minY, width: maxX - o.minX, height: o.height)
+        case .bottomRight:
+            selection = CGRect(x: o.minX, y: o.minY, width: maxX - o.minX, height: maxY - o.minY)
+        case .bottom:
+            selection = CGRect(x: o.minX, y: o.minY, width: o.width, height: maxY - o.minY)
+        case .bottomLeft:
+            selection = CGRect(x: minX, y: o.minY, width: o.maxX - minX, height: maxY - o.minY)
+        case .left:
+            selection = CGRect(x: minX, y: o.minY, width: o.maxX - minX, height: o.height)
+        case .move:
+            let x = max(0, min(o.minX + p.x - adjustPoint.x, bounds.width - o.width))
+            let y = max(0, min(o.minY + p.y - adjustPoint.y, bounds.height - o.height))
+            selection = CGRect(x: x, y: y, width: o.width, height: o.height)
+        case nil:
+            break
+        }
+    }
+
+    private func confirm() {
+        guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection) else { return }
+        onConfirm(selection)
+    }
+}
+
+/// 调整态可拖拽的部位：8 个手柄 + 选区内部（整体移动）
+/// （brief 原为 SelectionView 内 private 嵌套 enum，因外部类型不可引用而提为文件顶层，行为不变）
+enum SelectionHandleKind {
+    case topLeft, top, topRight, right
+    case bottomRight, bottom, bottomLeft, left
+    case move
 }
 
 /// 整屏矩形挖去选区的遮罩形状（配合 eoFill 挖洞）
@@ -93,7 +192,7 @@ private struct DimmingMask: Shape {
     }
 }
 
-/// 毛玻璃尺寸胶囊（macOS 系统玻璃材质）
+/// 液态玻璃尺寸胶囊
 private struct SizeBadge: View {
     let rect: CGRect
 
@@ -104,5 +203,93 @@ private struct SizeBadge: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .glassEffect(in: Capsule())
+    }
+}
+
+// MARK: - 手柄
+
+private struct AdjustStarterKey: EnvironmentKey {
+    // Swift 6 严格并发：闭包类型默认值不满足 Sendable，no-op 默认值 + 环境注入均在主线程，
+    // 用 nonisolated(unsafe) 显式豁免
+    nonisolated(unsafe) static let defaultValue: (SelectionHandleKind, CGPoint) -> Void = { _, _ in }
+}
+private struct AdjustUpdaterKey: EnvironmentKey {
+    nonisolated(unsafe) static let defaultValue: (CGPoint) -> Void = { _ in }
+}
+private struct AdjustEnderKey: EnvironmentKey {
+    nonisolated(unsafe) static let defaultValue: () -> Void = {}
+}
+
+// brief 原为 private extension：private 成员的 key path 在 Handle 的 @Environment 处不可见
+//（编译报 "cannot infer key path type"），改为默认 internal 使同模块可见。
+extension EnvironmentValues {
+    var adjustStarter: (SelectionHandleKind, CGPoint) -> Void {
+        get { self[AdjustStarterKey.self] } set { self[AdjustStarterKey.self] = newValue }
+    }
+    var adjustUpdater: (CGPoint) -> Void {
+        get { self[AdjustUpdaterKey.self] } set { self[AdjustUpdaterKey.self] = newValue }
+    }
+    var adjustEnder: () -> Void {
+        get { self[AdjustEnderKey.self] } set { self[AdjustEnderKey.self] = newValue }
+    }
+}
+
+/// 8 个缩放手柄（四角 + 四边中点），白点 8pt，命中区 16pt
+private struct HandleLayer: View {
+    let selection: CGRect
+
+    var body: some View {
+        let handles: [(SelectionHandleKind, CGPoint)] = [
+            (.topLeft, CGPoint(x: selection.minX, y: selection.minY)),
+            (.top, CGPoint(x: selection.midX, y: selection.minY)),
+            (.topRight, CGPoint(x: selection.maxX, y: selection.minY)),
+            (.right, CGPoint(x: selection.maxX, y: selection.midY)),
+            (.bottomRight, CGPoint(x: selection.maxX, y: selection.maxY)),
+            (.bottom, CGPoint(x: selection.midX, y: selection.maxY)),
+            (.bottomLeft, CGPoint(x: selection.minX, y: selection.maxY)),
+            (.left, CGPoint(x: selection.minX, y: selection.midY)),
+        ]
+
+        ZStack(alignment: .topLeading) {
+            ForEach(handles, id: \.0) { kind, position in
+                Handle(kind: kind, position: position)
+            }
+        }
+    }
+}
+
+private struct Handle: View {
+    let kind: SelectionHandleKind
+    let position: CGPoint
+
+    @Environment(\.adjustStarter) private var starter
+    @Environment(\.adjustUpdater) private var updater
+    @Environment(\.adjustEnder) private var ender
+    /// 手势已开始标志：minimumDistance 1 下首个 onChanged 的 translation 通常已非零，
+    /// 不能用 `translation == .zero` 判起点（否则 starter 永不触发、手柄失效）
+    @State private var began = false
+
+    var body: some View {
+        Circle()
+            .fill(.white)
+            .frame(width: 8, height: 8)
+            .shadow(radius: 1)
+            .frame(width: 16, height: 16)   // 扩大命中区
+            .contentShape(Rectangle())
+            .position(position)
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .named("sel"))
+                    .onChanged { value in
+                        if !began {
+                            began = true
+                            starter(kind, value.startLocation)
+                        }
+                        updater(value.location)
+                    }
+                    .onEnded { _ in
+                        began = false
+                        ender()
+                    }
+            )
     }
 }
