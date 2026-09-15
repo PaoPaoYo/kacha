@@ -22,6 +22,10 @@ struct SelectionView: View {
     @State private var adjustKind: SelectionHandleKind?
     @State private var adjustOrigin: CGRect = .zero
     @State private var adjustPoint: CGPoint = .zero
+    /// 光标决策快照（引用类型：@State 持同一实例，monitor 闭包每次读到最新值）
+    @State private var cursorState = CursorState()
+    /// NSEvent local monitor 令牌（onAppear 安装、onDisappear 移除）
+    @State private var cursorMonitor: Any?
 
     var body: some View {
         GeometryReader { geo in
@@ -54,17 +58,9 @@ struct SelectionView: View {
                             .frame(width: sel.width, height: sel.height)
                             .position(x: sel.midX, y: sel.midY)
                             .contentShape(Rectangle())
-                            .onHover { hovering in
-                                if hovering {
-                                    NSCursor.openHand.set()
-                                } else {
-                                    NSCursor.crosshair.set()
-                                }
-                            }
                             .gesture(
                                 DragGesture(minimumDistance: 1, coordinateSpace: .named("sel"))
                                     .onChanged { value in
-                                        NSCursor.closedHand.set()
                                         if adjustKind == nil {
                                             beginAdjust(.move, at: value.startLocation)
                                         }
@@ -126,6 +122,13 @@ struct SelectionView: View {
                     }
             )
             .focusable()
+            .onChange(of: selection) { _, new in
+                cursorState.selection = new
+                cursorState.hasSelection = SelectionGeometry.isValid(new)
+            }
+            .onChange(of: geo.size.height) { _, new in
+                cursorState.viewHeight = new
+            }
             .onKeyPress(.return) {
                 confirm()
                 return .handled
@@ -133,6 +136,20 @@ struct SelectionView: View {
             .onExitCommand(perform: onCancel)
             .onAppear {
                 NSLog("Kacha SelectionView onAppear: screenPointSize=%@, imagePixelSize=%@, geoSize=%@", NSStringFromSize(frame.screenPointSize), NSStringFromSize(frame.imagePixelSize), NSStringFromSize(geo.size))
+                // 光标快照初始化 + 安装单一决策点 monitor（替代 cursorRect / onHover 方案）
+                cursorState.viewHeight = geo.size.height
+                cursorState.selection = selection
+                cursorState.hasSelection = SelectionGeometry.isValid(selection)
+                cursorMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { event in
+                    Self.applyCursor(event: event, state: cursorState, screen: frame.screen)
+                    return event
+                }
+            }
+            .onDisappear {
+                if let cursorMonitor {
+                    NSEvent.removeMonitor(cursorMonitor)
+                }
+                cursorMonitor = nil
             }
         }
     }
@@ -193,6 +210,63 @@ struct SelectionView: View {
         guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection) else { return }
         onConfirm(selection)
     }
+
+    // MARK: 光标（NSEvent monitor 单一决策点）
+
+    /// 8 手柄命中判定（每点 ±8pt 方形命中区），返回对应系统 frameResize 位置
+    private static func handlePosition(at p: CGPoint, in sel: CGRect) -> NSCursor.FrameResizePosition? {
+        let handles: [(CGPoint, NSCursor.FrameResizePosition)] = [
+            (CGPoint(x: sel.minX, y: sel.minY), .topLeft),
+            (CGPoint(x: sel.midX, y: sel.minY), .top),
+            (CGPoint(x: sel.maxX, y: sel.minY), .topRight),
+            (CGPoint(x: sel.maxX, y: sel.midY), .right),
+            (CGPoint(x: sel.maxX, y: sel.maxY), .bottomRight),
+            (CGPoint(x: sel.midX, y: sel.maxY), .bottom),
+            (CGPoint(x: sel.minX, y: sel.maxY), .bottomLeft),
+            (CGPoint(x: sel.minX, y: sel.midY), .left),
+        ]
+        for (hp, position) in handles where abs(p.x - hp.x) <= 8 && abs(p.y - hp.y) <= 8 {
+            return position
+        }
+        return nil
+    }
+
+    /// 单一光标决策点：mouseMoved / leftMouseDragged 统一在此判定（cursorRect 已停用）
+    @MainActor
+    private static func applyCursor(event: NSEvent, state: CursorState, screen: NSScreen) {
+        // 多屏过滤：全局坐标不在本屏则不动光标（每屏一个 monitor，别抢别屏的光标）
+        guard screen.frame.contains(NSEvent.mouseLocation) else { return }
+        // 窗口左下原点 → 视图左上原点
+        let p = CGPoint(x: event.locationInWindow.x, y: state.viewHeight - event.locationInWindow.y)
+        // a. 还没有有效选区 → 十字
+        guard state.hasSelection else {
+            NSCursor.crosshair.set()
+            return
+        }
+        // b. 命中 8 手柄 → 对应方向缩放光标
+        if let position = handlePosition(at: p, in: state.selection) {
+            NSCursor.frameResize(position: position, directions: .all).set()
+            return
+        }
+        // c. 选区内 → 拖动中合掌 / 悬停开掌
+        if state.selection.contains(p) {
+            if event.type == .leftMouseDragged {
+                NSCursor.closedHand.set()
+            } else {
+                NSCursor.openHand.set()
+            }
+            return
+        }
+        // d. 其他 → 十字
+        NSCursor.crosshair.set()
+    }
+}
+
+/// 光标决策所用的可变快照：@State 持同一引用实例，monitor 闭包每次读到最新值
+private final class CursorState {
+    var hasSelection = false
+    var selection: CGRect = .zero
+    var viewHeight: CGFloat = 0
 }
 
 /// 调整态可拖拽的部位：8 个手柄 + 选区内部（整体移动）
@@ -301,17 +375,9 @@ private struct Handle: View {
             .frame(width: 16, height: 16)   // 扩大命中区
             .contentShape(Rectangle())
             .position(position)
-            .onHover { hovering in
-                if hovering {
-                    kind.resizeCursor.set()
-                } else {
-                    NSCursor.crosshair.set()
-                }
-            }
             .gesture(
                 DragGesture(minimumDistance: 1, coordinateSpace: .named("sel"))
                     .onChanged { value in
-                        kind.resizeCursor.set()   // 拖动中保持方向光标
                         if !began {
                             began = true
                             starter(kind, value.startLocation)
@@ -323,24 +389,5 @@ private struct Handle: View {
                         ender()
                     }
             )
-    }
-}
-
-// MARK: - 方向光标
-
-@MainActor
-private extension SelectionHandleKind {
-    /// 手柄对应的方向光标：边缘用系统左右/上下光标；四角用系统 frameResize 对角光标
-    /// （macOS 15+ API；原设想的 NSCursor(rawValue:) 在 AppKit 不存在，此为同一意图的系统 API）
-    var resizeCursor: NSCursor {
-        switch self {
-        case .left, .right: return .resizeLeftRight
-        case .top, .bottom: return .resizeUpDown
-        case .topLeft: return .frameResize(position: .topLeft, directions: .all)
-        case .topRight: return .frameResize(position: .topRight, directions: .all)
-        case .bottomLeft: return .frameResize(position: .bottomLeft, directions: .all)
-        case .bottomRight: return .frameResize(position: .bottomRight, directions: .all)
-        case .move: return .openHand
-        }
     }
 }

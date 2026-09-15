@@ -79,9 +79,8 @@ final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
-/// 鼠标进入窗口区域时显示十字光标（AppKit 原生 cursorRect 机制，比 push/pop 可靠）
+/// 光标宿主视图：cursorRect 机制已停用——cursorRect 会在每次 mouseMoved 时被 AppKit 重设，
+/// 覆盖 SelectionView 的 NSEvent monitor 光标；光标现由该 monitor 统一管理（单一决策点）。
 final class CrosshairHostingView<Content: View>: NSHostingView<Content> {
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .crosshair)
-    }
+    override func resetCursorRects() {}
 }
