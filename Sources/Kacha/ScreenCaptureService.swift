@@ -46,6 +46,8 @@ final class ScreenCaptureService {
             let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
             let config = SCStreamConfiguration()
             config.showsCursor = false
+            // 抓取原生分辨率，否则 macOS 默认 1920x1080 降采样（Retina 下破坏像素/点数换算）
+            config.captureResolution = .best
             do {
                 let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
                 frames.append(ScreenFrame(screen: screen, image: image))
