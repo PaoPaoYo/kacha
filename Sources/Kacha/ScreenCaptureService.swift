@@ -1,6 +1,15 @@
 import AppKit
 import ScreenCaptureKit
 
+/// 诊断落盘（append，UTF-8）：NSLog 进 unified log 不可靠，改写 /tmp/kacha_diag.txt
+/// （本机 MacOSX27.0 SDK 的 String.write(to:) 无 append: 参数，用读-拼-写实现 append）
+private func diag(_ line: String) {
+    let url = URL(fileURLWithPath: "/tmp/kacha_diag.txt")
+    var text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    text += line + "\n"
+    try? text.write(to: url, atomically: false, encoding: .utf8)
+}
+
 /// 一块屏幕与其冻结帧
 struct ScreenFrame {
     let screen: NSScreen
@@ -46,16 +55,17 @@ final class ScreenCaptureService {
             let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
             let config = SCStreamConfiguration()
             config.showsCursor = false
-            // 抓取原生分辨率，否则 macOS 默认 1920x1080 降采样（Retina 下破坏像素/点数换算）
-            config.captureResolution = .best
-            // SCScreenshotManager 对 captureResolution 不可靠（实测仍输出默认 1920x1080），
-            // 显式指定输出为屏幕物理像素，避免 letterbox 黑边与 Retina 降采样
-            let pixelWidth = CGDisplayPixelsWide(display.displayID)
-            let pixelHeight = CGDisplayPixelsHigh(display.displayID)
-            if pixelWidth > 0, pixelHeight > 0 {
-                config.width = Int(pixelWidth)
-                config.height = Int(pixelHeight)
-            }
+            // 不设 captureResolution：该 API 在 SCScreenshotManager 路径行为不可靠（实测与 width/height 相互覆盖）。
+            // 显式输出屏幕物理像素（SCDisplay.width/height 文档明确为像素），保底用 point × backingScaleFactor。
+            let pixelWidth = display.width > 0
+                ? display.width
+                : Int(screen.frame.width * screen.backingScaleFactor)
+            let pixelHeight = display.height > 0
+                ? display.height
+                : Int(screen.frame.height * screen.backingScaleFactor)
+            config.width = pixelWidth
+            config.height = pixelHeight
+            diag("SCDisplay=\(display.width)x\(display.height) CGPixels=\(CGDisplayPixelsWide(display.displayID))x\(CGDisplayPixelsHigh(display.displayID)) config=\(pixelWidth)x\(pixelHeight)")
             do {
                 let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
                 frames.append(ScreenFrame(screen: screen, image: image))
