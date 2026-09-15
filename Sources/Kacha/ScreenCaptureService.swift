@@ -56,16 +56,11 @@ final class ScreenCaptureService {
             let config = SCStreamConfiguration()
             config.showsCursor = false
             // 不设 captureResolution：该 API 在 SCScreenshotManager 路径行为不可靠（实测与 width/height 相互覆盖）。
-            // 显式输出屏幕物理像素（SCDisplay.width/height 文档明确为像素），保底用 point × backingScaleFactor。
-            let pixelWidth = display.width > 0
-                ? display.width
-                : Int(screen.frame.width * screen.backingScaleFactor)
-            let pixelHeight = display.height > 0
-                ? display.height
-                : Int(screen.frame.height * screen.backingScaleFactor)
-            config.width = pixelWidth
-            config.height = pixelHeight
-            diag("SCDisplay=\(display.width)x\(display.height) CGPixels=\(CGDisplayPixelsWide(display.displayID))x\(CGDisplayPixelsHigh(display.displayID)) config=\(pixelWidth)x\(pixelHeight)")
+            // 物理像素实测：CGDisplayPixelsWide 在 HiDPI 返回逻辑值(1512)、SCDisplay.width 头文件标注 points，
+            // 唯一可靠来源是 NSScreen point 尺寸 × backingScaleFactor（本机实测 1512×982×2.0=3024×1964）
+            config.width = Int(screen.frame.width * screen.backingScaleFactor)
+            config.height = Int(screen.frame.height * screen.backingScaleFactor)
+            diag("config=\(config.width)x\(config.height) screenPoint=\(Int(screen.frame.width))x\(Int(screen.frame.height)) scale=\(screen.backingScaleFactor)")
             do {
                 let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
                 frames.append(ScreenFrame(screen: screen, image: image))
