@@ -16,6 +16,7 @@ struct SelectionView: View {
 
             ZStack(alignment: .topLeading) {
                 Image(nsImage: NSImage(cgImage: frame.image, size: frame.screenPointSize))
+                    .resizable()
                     .frame(width: geo.size.width, height: geo.size.height)
 
                 // 35% 黑遮罩，选区处挖洞（evenOdd 填充）
@@ -56,7 +57,10 @@ struct SelectionView: View {
                         onConfirm(rect)
                     }
             )
-            .onAppear { NSCursor.crosshair.push() }
+            .onAppear {
+                NSCursor.crosshair.push()
+                NSLog("Kacha SelectionView onAppear: screenPointSize=%@, imagePixelSize=%@, geoSize=%@", NSStringFromSize(frame.screenPointSize), NSStringFromSize(frame.imagePixelSize), NSStringFromSize(geo.size))
+            }
             .onDisappear { NSCursor.pop() }
         }
         .onExitCommand(perform: onCancel)
