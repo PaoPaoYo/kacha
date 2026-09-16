@@ -1,11 +1,11 @@
 import SwiftUI
 
 /// 单屏框选视图：冻结帧 + 35% 黑遮罩挖洞 + 1pt 白边 + 液态玻璃尺寸胶囊。
-/// 两段式交互：拖拽框选 → 松开进入调整态（角/边缩放、内部平移）
-/// → 双击/回车/按钮确认，ESC 取消。
+/// 两段式交互：拖拽框选（或 idle 态点击窗口，蓝描边悬停高亮）→ 松开进入调整态
+/// （角/边缩放、内部平移）→ 双击/回车/按钮确认，ESC 取消。
 struct SelectionView: View {
     let frame: ScreenFrame
-    /// 本屏窗口矩形（局部坐标、front-to-back）；Task 3 接入悬停命中
+    /// 本屏窗口矩形（局部坐标、front-to-back）；悬停高亮与点击选中用
     let windows: [CGRect]
     /// 确认（复制）时回调：屏幕局部 point 选区（有效性已过滤）
     let onConfirm: (CGRect) -> Void
@@ -30,6 +30,8 @@ struct SelectionView: View {
     @State private var cursorState = CursorState()
     /// NSEvent local monitor 令牌（onAppear 安装、onDisappear 移除）
     @State private var cursorMonitor: Any?
+    /// 悬停命中的窗口矩形（仅 idle 态更新；dragging 期间保持旧值供 onEnded 窗口分支读取）
+    @State private var hoveredWindow: CGRect? = nil
 
     var body: some View {
         GeometryReader { geo in
@@ -40,9 +42,18 @@ struct SelectionView: View {
                     .resizable()
                     .frame(width: geo.size.width, height: geo.size.height)
 
-                DimmingMask(selection: sel)
+                let maskSelection = sel ?? ((phase == .idle) ? hoveredWindow : nil)
+                DimmingMask(selection: maskSelection)
                     .fill(.black.opacity(0.35), style: FillStyle(eoFill: true))
                     .allowsHitTesting(false)
+
+                if phase == .idle, let hw = hoveredWindow {
+                    Rectangle()
+                        .strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
+                        .frame(width: hw.width, height: hw.height)
+                        .position(x: hw.midX, y: hw.midY)
+                        .allowsHitTesting(false)
+                }
 
                 if let sel, SelectionGeometry.isValid(sel) {
                     Rectangle()
@@ -94,6 +105,18 @@ struct SelectionView: View {
                 }
             }
             .coordinateSpace(name: "sel")
+            .onContinuousHover(coordinateSpace: .named("sel")) { hoverPhase in
+                // 仅 idle 更新：按下进入 .dragging 后保持旧值，松手时窗口分支据此判定点击目标；
+                // ended（移出视图）一律清空
+                switch hoverPhase {
+                case .active(let point):
+                    if phase == .idle {
+                        hoveredWindow = WindowGeometry.hitTest(point: point, windows: windows)
+                    }
+                case .ended:
+                    hoveredWindow = nil
+                }
+            }
             .contentShape(Rectangle())
             .gesture(
                 // 空白处按下拖拽：画新选区（minimumDistance 0：原地点击也走 onEnded）
@@ -114,8 +137,13 @@ struct SelectionView: View {
                         if SelectionGeometry.isValid(rect) {
                             selection = rect
                             phase = .adjusting
+                        } else if let hw = hoveredWindow, phase != .adjusting {
+                            // 点击窗口：以窗口矩形为选区进入调整态（dragStart/dragCurrent 由 defer 清空，
+                            // 满足 confirm 的 dragStart == nil 守卫）
+                            selection = hw
+                            phase = .adjusting
                         } else {
-                            // 无效拖拽 / minimumDistance 0 误触（原地点击）：取消
+                            // 无效拖拽 / minimumDistance 0 误触（原地点击空白）：取消
                             onCancel()
                         }
                     }
