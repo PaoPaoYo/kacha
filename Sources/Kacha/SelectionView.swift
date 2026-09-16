@@ -3,8 +3,8 @@ import SwiftUI
 /// 单屏框选视图：冻结帧 + 35% 黑遮罩挖洞 + 1pt 白边 + 液态玻璃尺寸胶囊。
 /// 两段式交互：拖拽框选（或 idle 态点击窗口，蓝描边悬停高亮）→ 松开进入调整态
 /// （角/边缩放、内部平移）→ 双击/回车/按钮确认，ESC 取消。
-/// 调整态右下角单行工具栏（V3：标注工具 + 收起式色板/粗细/圆角面板 + 输出按钮）；
-/// 标注工具激活时选区内拖动为绘制，实时预览与最终输出共用 AnnotationGeometry.path（同构）。
+/// 调整态右下角单行工具栏（V3：标注工具 + 色板/粗细/圆角收起式面板，面板 overlay 锚定触发钮上方）；
+/// 标注工具激活时选区内拖动为绘制（光标统一十字），实时预览与最终输出共用 AnnotationGeometry.path（同构）。
 struct SelectionView: View {
     let frame: ScreenFrame
     /// 本屏窗口矩形（局部坐标、front-to-back）；悬停高亮与点击选中用
@@ -47,15 +47,10 @@ struct SelectionView: View {
     @State private var annotationWidth: AnnotationWidth = .medium
     /// 进行中的一笔标注（绘制手势期间持有；松开时 isValid 才入栈，随后清空）
     @State private var drawingAnnotation: Annotation?
-    /// 收起式弹出面板开关（互斥：同一时间至多展开一个，打开一个即关其他）
+    /// 收起式弹出面板开关（互斥：同一时间至多展开一个，打开一个即关其他；面板为触发钮 overlay，不占布局）
     @State private var showColorPalette = false
     @State private var showWidthPicker = false
     @State private var showRadiusSlider = false
-
-    /// 是否有弹出面板展开（布局组高 / 光标命中区 / 渲染面板行共用）
-    private var panelsVisible: Bool {
-        showColorPalette || showWidthPicker || showRadiusSlider
-    }
 
     var body: some View {
         GeometryReader { geo in
@@ -166,12 +161,12 @@ struct SelectionView: View {
                                 )
                         }
 
-                        // 选区右下角单行工具栏（收起式弹出面板）：
+                        // 选区右下角单行工具栏（紧贴选区）：
                         // [选择|箭头|矩形|椭圆|画笔] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]；
-                        // 色板/粗细/圆角点击在主行上方右对齐展开玻璃胶囊面板（互斥，至多一个）。
+                        // 色板/粗细/圆角面板为触发钮 overlay（浮于钮正上方、可盖选区、不占布局）。
                         // 整组布局（右缘锚点 / 底缘 / clamp / 光标命中区）见 toolbarRowLayout 单一公式源；
                         // 行内控件均为点击（无拖动手势），调整态父层手势已禁用，不会把操作漏进选区拖动
-                        let group = Self.toolbarRowLayout(sel: sel, bounds: geo.size, expanded: panelsVisible)
+                        let group = Self.toolbarRowLayout(sel: sel, bounds: geo.size)
                         CaptureToolbar(tool: $activeTool,
                                        color: $annotationColor,
                                        lineWidth: $annotationWidth,
@@ -240,13 +235,12 @@ struct SelectionView: View {
             .onChange(of: selection) { _, new in
                 cursorState.selection = new
                 cursorState.hasSelection = SelectionGeometry.isValid(new)
-                // 工具栏（单行 + 弹出面板）命中区与渲染 offset 用同一公式（toolbarRowLayout）；非调整态置空
-                cursorState.toolbarZone = phase == .adjusting ? Self.toolbarRowLayout(sel: new, bounds: geo.size, expanded: panelsVisible).zone : .zero
+                // 工具栏（单行）命中区与渲染 offset 用同一公式（toolbarRowLayout）；非调整态置空
+                cursorState.toolbarZone = phase == .adjusting ? Self.toolbarRowLayout(sel: new, bounds: geo.size).zone : .zero
             }
-            .onChange(of: panelsVisible) { _, newValue in
-                // 面板展开/收起即时刷新命中区（组高 24↔56）；非调整态保持置空
-                guard phase == .adjusting else { return }
-                cursorState.toolbarZone = Self.toolbarRowLayout(sel: selection, bounds: geo.size, expanded: newValue).zone
+            .onChange(of: activeTool) { _, new in
+                // 光标快照同步（引用实例，monitor 每次读到最新值）：绘制工具激活 → 选区内统一十字
+                cursorState.tool = new
             }
             .onChange(of: geo.size.height) { _, new in
                 cursorState.viewHeight = new
@@ -261,6 +255,7 @@ struct SelectionView: View {
                 cursorState.viewHeight = geo.size.height
                 cursorState.selection = selection
                 cursorState.hasSelection = SelectionGeometry.isValid(selection)
+                cursorState.tool = activeTool
                 cursorMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { event in
                     Self.applyCursor(event: event, state: cursorState, screen: frame.screen)
                     return event
@@ -451,30 +446,28 @@ struct SelectionView: View {
         return (CGPoint(x: saveX, y: y), CGPoint(x: copyX, y: y))
     }
 
-    /// 单行工具栏（主行 24pt；弹出面板展开时上方加 24pt 面板行 + 8 行距，组高 24/56）布局单一公式源
+    /// 单行工具栏（主行 24pt；色板/粗细/圆角面板为触发钮 overlay，不占布局）布局单一公式源
     /// （渲染 offset / 光标命中区共用）：组右缘锚定选区白边右缘（sel.maxX，与边框对齐）；
     /// 左缘出屏时整组右移（rowWidth 取主行估算宽 + 容差，右缘允许越过锚点）；
-    /// 锚点 = 主行底缘 bottom：belowFits 用展开态组总高（保守，展开/收起主行位置都不跳）——
-    /// 选区下方放得下展开组（组上缘贴选区下 8pt、组下缘再留 8pt 屏底余量）时组底缘 sel.maxY + 64
-    /// （主行中心 sel.maxY + 52），否则组底缘贴选区下缘内侧 8pt（主行中心 sel.maxY - 20，与 V2 一致）。
-    static func toolbarRowLayout(sel: CGRect, bounds: CGSize, expanded: Bool) -> (right: CGFloat, bottom: CGFloat, zone: CGRect) {
+    /// 锚点 = 主行底缘 bottom，整组紧贴选区：下方放得下（组顶贴 sel.maxY + 4、组底再留 8pt 屏底余量）
+    /// 时组底缘 sel.maxY + 28（主行中心 sel.maxY + 16），否则收进选区内侧组底缘 sel.maxY - 4
+    /// （主行中心 sel.maxY - 16，上下对称留 4pt）。
+    static func toolbarRowLayout(sel: CGRect, bounds: CGSize) -> (right: CGFloat, bottom: CGFloat, zone: CGRect) {
         // 主行实际宽 ≈427（工具 5×24 + 4×6 ＋ 分隔 1 ＋ 色钮 24 ＋ 粗细钮 24 ＋ 圆角钮 48 ＋ 分隔 1
         // ＋ 撤销 24 ＋ 分隔 1 ＋ 保存 44 ＋ 复制 44 ＋ 9×8 段间距），命中区左缘含约 9pt 容差 → 436，
         // 仅用于光标命中区与左缘 clamp；实际渲染用右缘 pin + offset，不依赖该估算。
         let rowWidth: CGFloat = 436
         let rowHeight: CGFloat = 24
-        let expandedHeight: CGFloat = rowHeight * 2 + 8   // 主行 + 行距 + 面板行
-        let groupHeight: CGFloat = expanded ? expandedHeight : rowHeight
         var right = sel.maxX
         if right - rowWidth < 6 {
             right = 6 + rowWidth
         }
-        // belowFits 用展开态组总高（保守）：面板展开/收起不改变主行位置
-        let belowFits = sel.maxY + 8 + expandedHeight + 8 <= bounds.height
-        let bottom = belowFits ? sel.maxY + 8 + expandedHeight + 8 : sel.maxY - 8
-        // 光标命中区 = 当前实际组矩形 + 上下各 6pt 容差（与 V2 单行 ±6 一致）
-        let zone = CGRect(x: right - rowWidth, y: bottom - groupHeight - 6,
-                          width: rowWidth, height: groupHeight + 12)
+        // 紧贴选区（组顶 sel.maxY + 4）：下方需组顶间距 4 + 主行 24 + 屏底余量 8
+        let belowFits = sel.maxY + 4 + rowHeight + 8 <= bounds.height
+        let bottom = belowFits ? sel.maxY + 4 + rowHeight : sel.maxY - 4
+        // 光标命中区 = 主行矩形 + 上下各 6pt 容差（与 V2 单行 ±6 一致；面板为 overlay 不占 zone）
+        let zone = CGRect(x: right - rowWidth, y: bottom - rowHeight - 6,
+                          width: rowWidth, height: rowHeight + 12)
         return (right, bottom, zone)
     }
 
@@ -504,6 +497,12 @@ struct SelectionView: View {
             NSCursor.pointingHand.set()
             return
         }
+        // b''. 绘制工具激活：绘制层覆盖整个选区（含边角手柄，move/缩放手势全部让位），
+        // 选区内外统一十字（工具栏命中区已在上方优先处理）
+        if state.tool.takesOverDrag {
+            NSCursor.crosshair.set()
+            return
+        }
         // c. 选区内 → 拖动中合掌 / 悬停开掌
         if state.selection.contains(p) {
             if event.type == .leftMouseDragged {
@@ -523,6 +522,8 @@ private final class CursorState {
     var hasSelection = false
     var selection: CGRect = .zero
     var viewHeight: CGFloat = 0
+    /// 当前标注工具：绘制工具激活时选区内（含边角手柄区）统一十字
+    var tool: AnnotationTool = .select
     /// 工具栏（单行 + 弹出面板）命中区，toolbarRowLayout 公式回填；悬停 → pointer 光标
     var toolbarZone: CGRect = .zero
 }
@@ -608,9 +609,9 @@ private struct ToolbarIconButton: View {
 
 /// 选区右下角单行工具栏（24pt 主行 + 收起式弹出面板）：
 /// [选择|箭头|矩形|椭圆|画笔] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]。
-/// 色板/粗细/圆角点击在主行上方右对齐展开玻璃胶囊面板（互斥，至多一个）：色/粗细选中即收起，
-/// 圆角拖动不收起（再点圆角钮收起）。arrow/rect/ellipse/pen 的绘制手势由 SelectionView
-/// 经 activeTool.takesOverDrag 接入选区拖动。
+/// 色板/粗细/圆角面板为触发钮的 overlay：浮于钮正上方（间隙 4pt）、可盖选区、不占布局（组高恒 24）。
+/// 互斥至多展开一个：色/粗细选中即收起，圆角拖动不收起（再点圆角钮收起）。
+/// arrow/rect/ellipse/pen 的绘制手势由 SelectionView 经 activeTool.takesOverDrag 接入选区拖动。
 private struct CaptureToolbar: View {
     @Binding var tool: AnnotationTool
     @Binding var color: RGBA
@@ -625,38 +626,12 @@ private struct CaptureToolbar: View {
     let onSave: () -> Void
     let onCopy: () -> Void
 
+    /// 面板锚定偏移（overlay alignment .bottom 上再 offset）：钮半高 12 ＋ 面板半高 12 ＋ 间隙 4
+    /// → 面板底缘贴钮顶上方 4pt
+    private let panelAnchorOffset: CGFloat = -(12 + 24 / 2 + 4)
+
     var body: some View {
-        VStack(alignment: .trailing, spacing: 8) {
-            if showColorPalette {
-                panelCapsule {
-                    HStack(spacing: 6) {
-                        ForEach(Array(RGBA.palette.enumerated()), id: \.offset) { _, c in
-                            colorSwatch(c) { showColorPalette = false }
-                        }
-                    }
-                }
-            } else if showWidthPicker {
-                panelCapsule {
-                    HStack(spacing: 6) {
-                        ForEach(AnnotationWidth.allCases, id: \.pt) { w in
-                            widthButton(w) { showWidthPicker = false }
-                        }
-                    }
-                }
-            } else if showRadiusSlider {
-                panelCapsule {
-                    HStack(spacing: 12) {
-                        Text("圆角").font(.system(size: 12, weight: .medium))
-                        Slider(value: $cornerRadius, in: 0...40, step: 1)
-                            .frame(width: 160)
-                        Text("\(Int(cornerRadius))")
-                            .font(.system(size: 12, weight: .medium).monospacedDigit())
-                            .frame(width: 24)
-                    }
-                }
-            }
-            mainRow
-        }
+        mainRow
     }
 
     // MARK: 主行
@@ -664,8 +639,9 @@ private struct CaptureToolbar: View {
     private var mainRow: some View {
         HStack(spacing: 8) {
             HStack(spacing: 6) {
-                // 「move」在 macOS 26 SDK 缺失（NSImage(systemSymbolName:) 返回 nil），选择工具改用 cursorarrow
-                ToolbarIconButton(symbol: "cursorarrow", selected: tool == .select) { tool = .select }
+                // 「move」在 macOS 26 SDK 缺失（NSImage(systemSymbolName:) 返回 nil）；cursorarrow 视觉不佳，
+                // 选择工具改用手型 hand.draw（probe 实证存在）
+                ToolbarIconButton(symbol: "hand.draw", selected: tool == .select) { tool = .select }
                 ToolbarIconButton(symbol: "arrow.up.right", selected: tool == .arrow) { tool = .arrow }
                 ToolbarIconButton(symbol: "rectangle", selected: tool == .rect) { tool = .rect }
                 ToolbarIconButton(symbol: "circle", selected: tool == .ellipse) { tool = .ellipse }
@@ -686,7 +662,7 @@ private struct CaptureToolbar: View {
         .frame(height: 24)
     }
 
-    /// 当前色钮（24×24 玻璃圆钮内嵌 14pt 色圆点）：点击展开/收起色板面板
+    /// 当前色钮（24×24 玻璃圆钮内嵌 14pt 色圆点）：点击展开/收起色板面板（浮于钮正上方）
     private var currentColorButton: some View {
         Button {
             togglePanel { showColorPalette.toggle() }
@@ -697,9 +673,21 @@ private struct CaptureToolbar: View {
         }
         .buttonStyle(.plain)
         .glassEffect(in: Circle())
+        .overlay(alignment: .bottom) {
+            if showColorPalette {
+                panelCapsule {
+                    HStack(spacing: 6) {
+                        ForEach(Array(RGBA.palette.enumerated()), id: \.offset) { _, c in
+                            colorSwatch(c) { showColorPalette = false }
+                        }
+                    }
+                }
+                .offset(y: panelAnchorOffset)
+            }
+        }
     }
 
-    /// 当前粗细钮（24×24 玻璃圆钮内嵌 dotDiameter 实心圆点）：点击展开/收起粗细面板
+    /// 当前粗细钮（24×24 玻璃圆钮内嵌 dotDiameter 实心圆点）：点击展开/收起粗细面板（浮于钮正上方）
     private var currentWidthButton: some View {
         Button {
             togglePanel { showWidthPicker.toggle() }
@@ -712,10 +700,22 @@ private struct CaptureToolbar: View {
         }
         .buttonStyle(.plain)
         .glassEffect(in: Circle())
+        .overlay(alignment: .bottom) {
+            if showWidthPicker {
+                panelCapsule {
+                    HStack(spacing: 6) {
+                        ForEach(AnnotationWidth.allCases, id: \.pt) { w in
+                            widthButton(w) { showWidthPicker = false }
+                        }
+                    }
+                }
+                .offset(y: panelAnchorOffset)
+            }
+        }
     }
 
     /// 圆角钮（玻璃胶囊：ruler 符号 + 当前值 10pt monospacedDigit；probe 实证 ruler 存在）：
-    /// 点击展开/收起圆角滑条面板（滑条拖动不收起）
+    /// 点击展开/收起圆角滑条面板（浮于钮正上方；滑条拖动不收起，再点钮收起）
     private var radiusButton: some View {
         Button {
             togglePanel { showRadiusSlider.toggle() }
@@ -732,6 +732,21 @@ private struct CaptureToolbar: View {
         }
         .buttonStyle(.plain)
         .glassEffect(in: Capsule())
+        .overlay(alignment: .bottom) {
+            if showRadiusSlider {
+                panelCapsule {
+                    HStack(spacing: 12) {
+                        Text("圆角").font(.system(size: 12, weight: .medium))
+                        Slider(value: $cornerRadius, in: 0...40, step: 1)
+                            .frame(width: 160)
+                        Text("\(Int(cornerRadius))")
+                            .font(.system(size: 12, weight: .medium).monospacedDigit())
+                            .frame(width: 24)
+                    }
+                }
+                .offset(y: panelAnchorOffset)
+            }
+        }
     }
 
     // MARK: 弹出面板（互斥）
