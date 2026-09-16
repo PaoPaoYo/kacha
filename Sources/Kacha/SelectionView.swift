@@ -143,8 +143,9 @@ struct SelectionView: View {
                             selection = hw
                             phase = .adjusting
                         } else {
-                            // 无效拖拽 / minimumDistance 0 误触（原地点击空白）：取消
-                            onCancel()
+                            // 点击空白：无操作（不取消，用户要求移除 V1 误触取消）；
+                            // phase 回落 idle，悬停高亮/窗口点击继续可用
+                            phase = .idle
                         }
                     }
             )

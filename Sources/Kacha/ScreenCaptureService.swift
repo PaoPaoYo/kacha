@@ -70,6 +70,7 @@ final class ScreenCaptureService {
         var windowsByScreen: [CGDirectDisplayID: [CGRect]] = [:]
         for window in content.windows {
             guard window.windowLayer == 0,
+                  window.isOnScreen, // 最小化/其他 Space 的窗口不可见
                   let owner = window.owningApplication,
                   owner.processID != myPID,
                   window.frame.width > 0, window.frame.height > 0
