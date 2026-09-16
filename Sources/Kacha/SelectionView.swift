@@ -551,19 +551,20 @@ struct SelectionView: View {
     /// （渲染 offset / 面板光标带基底共用）：组右缘锚定选区白边右缘（sel.maxX，与边框对齐）；
     /// 左缘出屏时整组右移（rowWidth 取主行估算宽 + 容差，右缘允许越过锚点）；
     /// 锚点 = 主行底缘 bottom，整组紧贴选区：下方放得下（组顶贴 sel.maxY + 4、组底再留 8pt 屏底余量）
-    /// 时组底缘 sel.maxY + 28（主行中心 sel.maxY + 16），否则收进选区内侧组底缘 sel.maxY - 4
-    /// （主行中心 sel.maxY - 16，上下对称留 4pt）。
+    /// 时组底缘 sel.maxY + 38（主行中心 sel.maxY + 21），否则收进选区内侧组底缘 sel.maxY - 4
+    /// （主行 34pt 高：底部留 4pt，主体伸入选区内 38pt）。
     static func toolbarRowLayout(sel: CGRect, bounds: CGSize) -> (right: CGFloat, bottom: CGFloat, row: CGRect) {
-        // 主行实际宽 ≈417（工具 6×24 + 5×6 ＋ 分隔 1 ＋ 色钮 24 ＋ 粗细钮 24 ＋ 圆角钮 48 ＋ 分隔 1
-        // ＋ 撤销 24 ＋ 分隔 1 ＋ 保存钮 24 ＋ 复制钮 24 ＋ 9×8 段间距），左缘含约 9pt 容差 → 426，
+        // 玻璃胶囊实际宽 ≈437（工具 6×24 + 5×6 ＋ 分隔 1 ＋ 色钮 24 ＋ 粗细钮 24 ＋ 圆角钮 48 ＋ 分隔 1
+        // ＋ 撤销 24 ＋ 分隔 1 ＋ 保存钮 24 ＋ 复制钮 24 ＋ 9×8 段间距 ＋ 胶囊水平留白 10×2），
+        // blur 态色钮隐藏 ≈405；常量取含色钮宽 + 约 9pt 容差 → 446（保左缘 clamp 后仍有 6pt 屏内余量），
         // 仅用于面板光标带基底与左缘 clamp；实际渲染用右缘 pin + offset，不依赖该估算。
-        let rowWidth: CGFloat = 426
-        let rowHeight: CGFloat = 24
+        let rowWidth: CGFloat = 446
+        let rowHeight: CGFloat = 34
         var right = sel.maxX
         if right - rowWidth < 6 {
             right = 6 + rowWidth
         }
-        // 紧贴选区（组顶 sel.maxY + 4）：下方需组顶间距 4 + 主行 24 + 屏底余量 8
+        // 紧贴选区（组顶 sel.maxY + 4）：下方需组顶间距 4 + 胶囊 34 + 屏底余量 8
         let belowFits = sel.maxY + 4 + rowHeight + 8 <= bounds.height
         let bottom = belowFits ? sel.maxY + 4 + rowHeight : sel.maxY - 4
         // 主行矩形（面板展开期间光标带的基底，见 panelBand）
@@ -723,41 +724,42 @@ private struct SizeBadge: View {
     }
 }
 
-/// 液态玻璃圆形图标钮（24×24）：标注工具 / 撤销 / 保存 / 复制共用规格；
-/// selected 时 accent 描边高亮（仅选择态工具钮用，动作钮恒 false）；
-/// tint 非 nil 时玻璃叠加色染色、图标转白，形成实心主按钮（primary action）观感
+/// 无底色图标钮（24×24 命中区）：标注工具 / 撤销 / 保存 / 复制共用规格。
+/// 视觉重构后整行共享一个液态玻璃胶囊，钮本身不带底色（前景 .primary）；
+/// 仅左侧六个工具钮有选中态：20×20 accent 实心内圆 + 白色图标（旧 accent 描边态已删）；
+/// 保存/复制/撤销等动作钮恒 false（纯图标）
 private struct ToolbarIconButton: View {
     let symbol: String
     let selected: Bool
     /// 无障碍标签（图标钮可读性，全部钮显式传入中文名）
     let accessibilityLabel: String
-    /// 玻璃染色（如复制钮 accent 主按钮观感）；nil = regular 玻璃 + primary 前景
-    var tint: Color? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(tint != nil ? Color.white : .primary)
+                .foregroundStyle(selected ? Color.white : Color.primary)
                 .frame(width: 24, height: 24)
+                .background {
+                    // 选中态底色画在 24×24 命中区上层居中（20×20 内圆，四周留 2pt 呼吸）
+                    if selected {
+                        Circle().fill(Color(nsColor: .controlAccentColor))
+                            .frame(width: 20, height: 20)
+                    }
+                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .glassEffect(tint.map { .regular.tint($0) } ?? .regular, in: Circle())
         .accessibilityLabel(accessibilityLabel)
-        .overlay {
-            if selected {
-                Circle().strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
-            }
-        }
     }
 }
 
-/// 选区右下角单行工具栏（24pt 主行 + 收起式弹出面板）：
+/// 选区右下角单行工具栏（整体液态玻璃胶囊 ~34pt + 收起式弹出面板）：
 /// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]。
-/// 色板/粗细/圆角面板为触发钮的 overlay：浮于钮正上方（间隙 4pt）、可盖选区、不占布局（组高恒 24）。
-/// 互斥至多展开一个：色/粗细选中即收起，圆角拖动不收起（再点圆角钮收起）。
+/// 视觉重构：整行包进单一 glassEffect(in: Capsule())（左右留白 10 / 上下 5，高 24+10=34），
+/// 钮全部无底色；色板/粗细/圆角面板仍为触发钮的独立玻璃胶囊 overlay（浮于钮正上方、间隙 4pt、
+/// 可盖选区、不占布局）。互斥至多展开一个：色/粗细选中即收起，圆角拖动不收起（再点圆角钮收起）。
 /// arrow/rect/ellipse/pen/blur 的绘制手势由 SelectionView 经 activeTool.takesOverDrag 接入选区拖动。
 private struct CaptureToolbar: View {
     @Binding var tool: AnnotationTool
@@ -813,8 +815,8 @@ private struct CaptureToolbar: View {
                 .opacity(canUndo ? 1 : 0.4)
                 .disabled(!canUndo)
             separator
-            // 动作钮：与其他工具钮统一 24×24 玻璃圆钮规格（无选中态），accessibilityLabel 保可读性；
-            // 复制 = 主操作：accent tint 玻璃 + 白色图标（实心主按钮观感），保存保持 regular
+            // 动作钮：与其他钮统一 24×24 无底色纯图标规格（无选中态），accessibilityLabel 保可读性；
+            // 复制钮原 accent tint primary 特殊观感随整体玻璃块重构取消（全部统一无底色）
             ToolbarIconButton(symbol: "square.and.arrow.down",
                               selected: false,
                               accessibilityLabel: "保存",
@@ -822,13 +824,17 @@ private struct CaptureToolbar: View {
             ToolbarIconButton(symbol: "doc.on.doc",
                               selected: false,
                               accessibilityLabel: "复制",
-                              tint: Color(nsColor: .controlAccentColor),
                               action: onCopy)
         }
         .frame(height: 24)
+        // 整体玻璃块：单行内容包进一个胶囊（左右 10 / 上下 5 留白，高 24+10=34），
+        // 替代原先每钮独立玻璃圆钮
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .glassEffect(in: Capsule())
     }
 
-    /// 当前色钮（24×24 玻璃圆钮内嵌 14pt 色圆点）：点击展开/收起色板面板（浮于钮正上方）
+    /// 当前色钮（24×24 命中区，内嵌 14pt 色圆点，无底色）：点击展开/收起色板面板（浮于钮正上方）
     private var currentColorButton: some View {
         Button {
             togglePanel { showColorPalette.toggle() }
@@ -838,7 +844,6 @@ private struct CaptureToolbar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .glassEffect(in: Circle())
         .overlay(alignment: .bottom) {
             if showColorPalette {
                 panelCapsule {
@@ -853,7 +858,7 @@ private struct CaptureToolbar: View {
         }
     }
 
-    /// 当前粗细钮（24×24 玻璃圆钮内嵌 dotDiameter 实心圆点）：点击展开/收起粗细面板（浮于钮正上方）。
+    /// 当前粗细钮（24×24 命中区，内嵌 dotDiameter 实心圆点，无底色）：点击展开/收起粗细面板（浮于钮正上方）。
     /// 面板内容按工具分支：普通工具 = 三档圆点；blur 工具 = 半径/笔宽双滑块（两行，~48 高）
     private var currentWidthButton: some View {
         Button {
@@ -866,7 +871,6 @@ private struct CaptureToolbar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .glassEffect(in: Circle())
         .overlay(alignment: .bottom) {
             if showWidthPicker {
                 if tool == .blur {
@@ -912,7 +916,7 @@ private struct CaptureToolbar: View {
         .foregroundStyle(.primary)
     }
 
-    /// 圆角钮（玻璃胶囊：rectangle.roundedtop 圆角矩形符号（比 ruler 更直观，probe 实证存在）
+    /// 圆角钮（无底色：rectangle.roundedtop 圆角矩形符号（比 ruler 更直观，probe 实证存在）
     /// + 当前值 10pt monospacedDigit）：点击展开/收起圆角滑条面板（浮于钮正上方；滑条拖动不收起，再点钮收起）
     private var radiusButton: some View {
         Button {
@@ -929,7 +933,6 @@ private struct CaptureToolbar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .glassEffect(in: Capsule())
         .overlay(alignment: .bottom) {
             if showRadiusSlider {
                 panelCapsule {
