@@ -48,3 +48,11 @@ idle（无选区）
 
 - 纯窗口图层抓取（desktopIndependentWindow）——用户已选屏幕区域裁剪
 - 窗口移动实时跟踪、Tab 组聚合、跨屏窗口合并、标注（V3）、钉图（V4）
+
+## 7. 冒烟期迭代追加（2026-09-16）
+
+- 点击空白处无操作（不取消，回落 idle 继续等待）；右键任意时刻取消截图
+- 窗口枚举过滤 `isOnScreen`（最小化/其他 Space 窗口不可见）
+- Z 序用 `CGWindowListCopyWindowInfo` front-to-back 顺序排序（SCShareableContent.windows 顺序未定义，配对实验实证）
+- 截图圆角：调整态选区底部操作栏（圆角滑条 0...40 step 1 + 保存 + 复制，统一 24pt 高玻璃胶囊）；选区白边与遮罩挖洞同步圆角；输出经 CGContext 圆角化（premultiplied alpha 透明角，pixelRadius = point × scale，clamp min(w,h)/2）；**圆角值跨会话记忆（@AppStorage/UserDefaults）**
+- 开机自启：菜单栏「开机自启」开关（SMAppService.mainApp register/unregister）
