@@ -98,31 +98,29 @@ struct SelectionView: View {
                             }
                             .environment(\.adjustEnder) { adjustKind = nil }
 
-                        // 右下角按钮组（液态玻璃胶囊文字钮）：保存（复制左侧 8pt）+ 复制；位置 clamp——下方空间不足时收进选区内侧
-                        let centers = Self.buttonCenters(sel: sel, bounds: geo.size)
-                        ToolbarButton(label: "保存", action: save)
-                            .position(x: centers.save.x, y: centers.save.y)
-                        ToolbarButton(label: "复制", action: confirm)
-                            .position(x: centers.copy.x, y: centers.copy.y)
-
-                        // 屏幕底部中央：圆角滑动条（液态玻璃胶囊），拖动实时更新白边预览与输出半径；
-                        // 命中区在选区外（选区外父层手势已禁用），不与选区手势冲突
+                        // 选区右下角按钮行：圆角滑条（实时更新白边预览与输出半径）+ 保存 + 复制，
+                        // 整行布局（右缘锚点 / y / clamp / 光标命中区）见 toolbarRowLayout 单一公式源；
+                        // 行内滑条命中区在选区外亦不与父层手势冲突（调整态父层手势已禁用）
+                        let row = Self.toolbarRowLayout(sel: sel, bounds: geo.size)
                         HStack(spacing: 12) {
-                            Text("圆角").font(.system(size: 12, weight: .medium))
-                            Slider(value: $cornerRadius, in: 0...40, step: 1)
-                                .frame(width: 160)
-                            Text("\(Int(cornerRadius))")
-                                .font(.system(size: 12, weight: .medium).monospacedDigit())
-                                .frame(width: 24)
+                            HStack(spacing: 12) {
+                                Text("圆角").font(.system(size: 12, weight: .medium))
+                                Slider(value: $cornerRadius, in: 0...40, step: 1)
+                                    .frame(width: 160)
+                                Text("\(Int(cornerRadius))")
+                                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                                    .frame(width: 24)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .glassEffect(in: Capsule())
+                            ToolbarButton(label: "保存", action: save)
+                            ToolbarButton(label: "复制", action: confirm)
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .glassEffect(in: Capsule())
-                        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named("sel")) }) {
-                            // 胶囊实际位置喂给光标决策（悬停 → pointer）
-                            cursorState.sliderFrame = $0
-                        }
-                        .position(x: geo.size.width / 2, y: geo.size.height - 36)
+                        // 右缘先 pin 到屏右、再 offset 到锚点：右对齐不依赖行宽（行宽随内容自适应）
+                        .frame(width: geo.size.width, height: geo.size.height,
+                               alignment: Alignment(horizontal: .trailing, vertical: .center))
+                        .offset(x: row.right - geo.size.width, y: row.centerY - geo.size.height / 2)
                     }
                 }
             }
@@ -175,8 +173,8 @@ struct SelectionView: View {
             .onChange(of: selection) { _, new in
                 cursorState.selection = new
                 cursorState.hasSelection = SelectionGeometry.isValid(new)
-                // 两按钮 frame 与按钮 position 用同一公式；非调整态置空
-                cursorState.buttonFrames = phase == .adjusting ? Self.buttonFrames(sel: new, in: geo.size) : []
+                // 按钮行命中区与渲染 offset 用同一公式（toolbarRowLayout）；非调整态置空
+                cursorState.toolbarZone = phase == .adjusting ? Self.toolbarRowLayout(sel: new, bounds: geo.size).zone : .zero
             }
             .onChange(of: geo.size.height) { _, new in
                 cursorState.viewHeight = new
@@ -302,9 +300,8 @@ struct SelectionView: View {
         return nil
     }
 
-    /// 按钮组中心位置（单一公式源，按钮 position / 光标命中两处共用）：
-    /// 复制按钮在选区右下角外侧，保存按钮在其左 52pt（44 按钮 + 8 间距）；
-    /// 右缘 clamp 到屏内、左缘 clamp ≥ 28（半钮宽 22 + 6 边距），下方空间不足时收进选区内侧
+    /// 按钮行锚点（单一公式源，toolbarRowLayout 消费）：复制钮中心 x/y 决定整行右缘锚点与 y；
+    /// 右缘 clamp 到屏内、下方空间不足时 y 收进选区内侧
     static func buttonCenters(sel: CGRect, bounds: CGSize) -> (save: CGPoint, copy: CGPoint) {
         let spacing: CGFloat = 52
         let copyX = min(sel.maxX - 16, bounds.width - 28)
@@ -314,10 +311,20 @@ struct SelectionView: View {
         return (CGPoint(x: saveX, y: y), CGPoint(x: copyX, y: y))
     }
 
-    /// 两个按钮的 44×24 命中框（与按钮 position 同一公式，供光标判定使用）
-    private static func buttonFrames(sel: CGRect, in size: CGSize) -> [CGRect] {
-        let c = buttonCenters(sel: sel, bounds: size)
-        return [c.save, c.copy].map { CGRect(x: $0.x - 22, y: $0.y - 12, width: 44, height: 24) }
+    /// 按钮行（圆角滑条胶囊 + 保存 + 复制）布局单一公式源（渲染 offset / 光标命中区共用）：
+    /// 右缘锚定原复制钮右缘（copyX + 22，copyX 沿用 buttonCenters clamp——贴右缘选区时已收进屏内）；
+    /// 左缘出屏时整行右移（滑条优先保证可见，右缘允许越过锚点）；y 沿用按钮 y
+    /// （belowFits ? sel.maxY + 20 : sel.maxY - 20，下方放不下时整行随按钮一起收进选区内侧）。
+    /// 行宽 376 为估算常量（胶囊 ≈264 + 12 + 保存 44 + 12 + 复制 44），仅用于光标命中区；
+    /// 实际渲染用右缘 pin + offset，不依赖该估算。
+    static func toolbarRowLayout(sel: CGRect, bounds: CGSize) -> (right: CGFloat, centerY: CGFloat, zone: CGRect) {
+        let rowWidth: CGFloat = 376
+        let centers = buttonCenters(sel: sel, bounds: bounds)
+        var right = centers.copy.x + 22
+        if right - rowWidth < 6 {
+            right = 6 + rowWidth
+        }
+        return (right, centers.copy.y, CGRect(x: right - rowWidth, y: centers.copy.y - 18, width: rowWidth, height: 36))
     }
 
     /// 单一光标决策点：mouseMoved / leftMouseDragged 统一在此判定（cursorRect 已停用）
@@ -341,8 +348,8 @@ struct SelectionView: View {
             (vertical ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).set()
             return
         }
-        // b'. 悬停保存/复制按钮 / 底部圆角滑动条 → pointingHand
-        if state.buttonFrames.contains(where: { $0.contains(p) }) || state.sliderFrame.contains(p) {
+        // b'. 悬停按钮行（圆角滑条 / 保存 / 复制）→ pointingHand
+        if state.toolbarZone.contains(p) {
             NSCursor.pointingHand.set()
             return
         }
@@ -365,9 +372,8 @@ private final class CursorState {
     var hasSelection = false
     var selection: CGRect = .zero
     var viewHeight: CGFloat = 0
-    var buttonFrames: [CGRect] = []
-    /// 底部圆角滑动条胶囊的实际 frame（onGeometryChange 回填；悬停 → pointer 光标）
-    var sliderFrame: CGRect = .zero
+    /// 按钮行（圆角滑条 + 保存 + 复制）命中区，toolbarRowLayout 公式回填；悬停 → pointer 光标
+    var toolbarZone: CGRect = .zero
 }
 
 /// 调整态可拖拽的部位：8 个手柄 + 选区内部（整体移动）
