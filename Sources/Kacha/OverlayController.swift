@@ -47,6 +47,11 @@ final class OverlayController {
             let hosting = CrosshairHostingView(rootView: view)
             hosting.frame = panel.contentView?.bounds ?? frame.screen.frame
             hosting.autoresizingMask = [.width, .height]
+            // 右击取消（与 ESC 等价）
+            hosting.onRightClick = { [weak self] in
+                self?.dismissAll()
+                onCancel()
+            }
             panel.contentView = hosting
             // 第一块屏的 panel 成为 key window（接收 ESC），其余仅前置
             if index == 0 {
@@ -89,6 +94,14 @@ final class KeyablePanel: NSPanel {
 
 /// 光标宿主视图：cursorRect 机制已停用——cursorRect 会在每次 mouseMoved 时被 AppKit 重设，
 /// 覆盖 SelectionView 的 NSEvent monitor 光标；光标现由该 monitor 统一管理（单一决策点）。
+/// 右击取消截图（与 ESC 等价），经 onRightClick 回调 OverlayController。
 final class CrosshairHostingView<Content: View>: NSHostingView<Content> {
     override func resetCursorRects() {}
+
+    /// 右击回调（show() 中接线：dismissAll + onCancel）
+    var onRightClick: (() -> Void)?
+
+    override func rightMouseDown(with event: NSEvent) {
+        onRightClick?()
+    }
 }
