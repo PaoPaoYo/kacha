@@ -423,13 +423,18 @@ struct SelectionView: View {
         return nil
     }
 
-    /// 整边命中判定（边线 ±8，端点缩 8pt 与 EdgeHandle 命中条一致）：
-    /// true = 上下边（resizeUpDown）/ false = 左右边（resizeLeftRight）/ nil = 未命中
+    /// 整边命中判定（内侧 8pt / 外侧 3pt，与 EdgeHandle 命中条同几何；端点缩 8pt 与边条一致）：
+    /// true = 上下边（resizeUpDown）/ false = 左右边（resizeLeftRight）/ nil = 未命中。
+    /// 外侧由 8pt 收窄为 3pt：光标与命中一致，不再在紧贴工具栏的缝隙处给出手势暗示
     private static func edgeAxis(at p: CGPoint, in sel: CGRect) -> Bool? {
         let inXSpan = p.x >= sel.minX + 8 && p.x <= sel.maxX - 8
         let inYSpan = p.y >= sel.minY + 8 && p.y <= sel.maxY - 8
-        if inXSpan, abs(p.y - sel.minY) <= 8 || abs(p.y - sel.maxY) <= 8 { return true }
-        if inYSpan, abs(p.x - sel.minX) <= 8 || abs(p.x - sel.maxX) <= 8 { return false }
+        let nearTop = p.y >= sel.minY - 3 && p.y <= sel.minY + 8
+        let nearBottom = p.y >= sel.maxY - 8 && p.y <= sel.maxY + 3
+        let nearLeft = p.x >= sel.minX - 3 && p.x <= sel.minX + 8
+        let nearRight = p.x >= sel.maxX - 8 && p.x <= sel.maxX + 3
+        if inXSpan, nearTop || nearBottom { return true }
+        if inYSpan, nearLeft || nearRight { return false }
         return nil
     }
 
@@ -854,17 +859,19 @@ extension EnvironmentValues {
     }
 }
 
-/// 8 个缩放手柄（四角 + 四边中点），白点 8pt，命中区 16pt
+/// 8 个缩放手柄（四角 + 四边中点）：白点 8pt；角命中 ±8，整边命中条内侧 8pt / 外侧 3pt
 private struct HandleLayer: View {
     let selection: CGRect
 
     var body: some View {
         let edges: [(SelectionHandleKind, CGRect)] = [
-            // 命中条厚 16pt（边线 ±8），端点各缩 8pt 让角区独占（角手柄后渲染、命中优先）
-            (.top, CGRect(x: selection.minX + 8, y: selection.minY - 8, width: selection.width - 16, height: 16)),
-            (.bottom, CGRect(x: selection.minX + 8, y: selection.maxY - 8, width: selection.width - 16, height: 16)),
-            (.left, CGRect(x: selection.minX - 8, y: selection.minY + 8, width: 16, height: selection.height - 16)),
-            (.right, CGRect(x: selection.maxX - 8, y: selection.minY + 8, width: 16, height: selection.height - 16)),
+            // 命中条：内侧 8pt / 外侧 3pt（厚 11pt）——外侧不再扩 8pt，避免伸入选区与紧贴工具栏
+            // 之间的 4pt 缝隙（缝隙/工具栏上拖动误触单边缩放的回归修复，光标判定 edgeAxis 同几何）；
+            // 端点各缩 8pt 让角区独占（角手柄后渲染、命中优先，四角保持 ±8 有白点视觉指示）
+            (.top, CGRect(x: selection.minX + 8, y: selection.minY - 3, width: selection.width - 16, height: 11)),
+            (.bottom, CGRect(x: selection.minX + 8, y: selection.maxY - 8, width: selection.width - 16, height: 11)),
+            (.left, CGRect(x: selection.minX - 3, y: selection.minY + 8, width: 11, height: selection.height - 16)),
+            (.right, CGRect(x: selection.maxX - 8, y: selection.minY + 8, width: 11, height: selection.height - 16)),
         ]
         let handles: [(SelectionHandleKind, CGPoint)] = [
             (.topLeft, CGPoint(x: selection.minX, y: selection.minY)),
