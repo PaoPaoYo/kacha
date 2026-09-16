@@ -7,10 +7,10 @@ struct SelectionView: View {
     let frame: ScreenFrame
     /// 本屏窗口矩形（局部坐标、front-to-back）；悬停高亮与点击选中用
     let windows: [CGRect]
-    /// 确认（复制）时回调：屏幕局部 point 选区（有效性已过滤）
-    let onConfirm: (CGRect) -> Void
-    /// 保存时回调：屏幕局部 point 选区（有效性已过滤）
-    let onSave: (CGRect) -> Void
+    /// 确认（复制）时回调：屏幕局部 point 选区（有效性已过滤）+ 圆角半径（point，0 = 直角）
+    let onConfirm: (CGRect, CGFloat) -> Void
+    /// 保存时回调：屏幕局部 point 选区（有效性已过滤）+ 圆角半径（point，0 = 直角）
+    let onSave: (CGRect, CGFloat) -> Void
     let onCancel: () -> Void
 
     private enum Phase {
@@ -32,6 +32,8 @@ struct SelectionView: View {
     @State private var cursorMonitor: Any?
     /// 悬停命中的窗口矩形（仅 idle 态更新；dragging 期间保持旧值供 onEnded 窗口分支读取）
     @State private var hoveredWindow: CGRect? = nil
+    /// 输出圆角半径（point）：底部滑动条实时调整；每次截图会话新建 SelectionView，自动重置为 0
+    @State private var cornerRadius: Double = 0
 
     var body: some View {
         GeometryReader { geo in
@@ -56,7 +58,8 @@ struct SelectionView: View {
                 }
 
                 if let sel, SelectionGeometry.isValid(sel) {
-                    Rectangle()
+                    // 白边随圆角实时变化（dragging 态 cornerRadius 恒 0，即直角，共用一处）
+                    RoundedRectangle(cornerRadius: cornerRadius)
                         .strokeBorder(.white, lineWidth: 1)
                         .frame(width: sel.width, height: sel.height)
                         .position(x: sel.midX, y: sel.midY)
@@ -101,6 +104,25 @@ struct SelectionView: View {
                             .position(x: centers.save.x, y: centers.save.y)
                         ToolbarButton(label: "复制", action: confirm)
                             .position(x: centers.copy.x, y: centers.copy.y)
+
+                        // 屏幕底部中央：圆角滑动条（液态玻璃胶囊），拖动实时更新白边预览与输出半径；
+                        // 命中区在选区外（选区外父层手势已禁用），不与选区手势冲突
+                        HStack(spacing: 12) {
+                            Text("圆角").font(.system(size: 12, weight: .medium))
+                            Slider(value: $cornerRadius, in: 0...40, step: 1)
+                                .frame(width: 160)
+                            Text("\(Int(cornerRadius))")
+                                .font(.system(size: 12, weight: .medium).monospacedDigit())
+                                .frame(width: 24)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .glassEffect(in: Capsule())
+                        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named("sel")) }) {
+                            // 胶囊实际位置喂给光标决策（悬停 → pointer）
+                            cursorState.sliderFrame = $0
+                        }
+                        .position(x: geo.size.width / 2, y: geo.size.height - 36)
                     }
                 }
             }
@@ -238,12 +260,12 @@ struct SelectionView: View {
 
     private func confirm() {
         guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection) else { return }
-        onConfirm(selection)
+        onConfirm(selection, CGFloat(cornerRadius))
     }
 
     private func save() {
         guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection) else { return }
-        onSave(selection)
+        onSave(selection, CGFloat(cornerRadius))
     }
 
     /// 移除光标 monitor（幂等）：覆盖窗被 dismissAll 时经通知触发，onDisappear 兜底重复调用
@@ -319,8 +341,8 @@ struct SelectionView: View {
             (vertical ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).set()
             return
         }
-        // b'. 悬停保存/复制按钮 → pointingHand
-        if state.buttonFrames.contains(where: { $0.contains(p) }) {
+        // b'. 悬停保存/复制按钮 / 底部圆角滑动条 → pointingHand
+        if state.buttonFrames.contains(where: { $0.contains(p) }) || state.sliderFrame.contains(p) {
             NSCursor.pointingHand.set()
             return
         }
@@ -344,6 +366,8 @@ private final class CursorState {
     var selection: CGRect = .zero
     var viewHeight: CGFloat = 0
     var buttonFrames: [CGRect] = []
+    /// 底部圆角滑动条胶囊的实际 frame（onGeometryChange 回填；悬停 → pointer 光标）
+    var sliderFrame: CGRect = .zero
 }
 
 /// 调整态可拖拽的部位：8 个手柄 + 选区内部（整体移动）
