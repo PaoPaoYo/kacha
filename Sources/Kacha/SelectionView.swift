@@ -45,7 +45,7 @@ struct SelectionView: View {
                     .frame(width: geo.size.width, height: geo.size.height)
 
                 let maskSelection = validDragRect ?? ((phase != .adjusting) ? hoveredWindow : nil)
-                // 挖洞圆角与白边一致（选区洞）；悬停窗口洞保持直角
+                // 挖洞圆角跟随 cornerRadius（拖拽/调整态含 @AppStorage 记忆值），与白边及最终输出一致（所见即所得）；悬停窗口洞保持直角
                 DimmingMask(selection: maskSelection, cornerRadius: validDragRect != nil ? cornerRadius : 0)
                     .fill(.black.opacity(0.35), style: FillStyle(eoFill: true))
                     .allowsHitTesting(false)
@@ -59,7 +59,7 @@ struct SelectionView: View {
                 }
 
                 if let sel, SelectionGeometry.isValid(sel) {
-                    // 白边随圆角实时变化（dragging 态 cornerRadius 恒 0，即直角，共用一处）
+                    // 白边随圆角实时变化：拖拽/调整态跟随 cornerRadius（含 @AppStorage 记忆值），与挖洞及最终输出一致（所见即所得，共用一处）
                     RoundedRectangle(cornerRadius: cornerRadius)
                         .strokeBorder(.white, lineWidth: 1)
                         .frame(width: sel.width, height: sel.height)
