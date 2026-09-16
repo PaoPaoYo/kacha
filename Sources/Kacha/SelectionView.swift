@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// 单屏框选视图：冻结帧 + 35% 黑遮罩挖洞 + 1pt 白边 + 液态玻璃尺寸胶囊。
-/// 两段式交互：拖拽框选 → 松开进入调整态（手柄缩放 / 内部平移 / 外部重选）
-/// → 双击或回车确认，ESC 取消。
+/// 两段式交互：拖拽框选 → 松开进入调整态（角/边缩放、内部平移）
+/// → 双击/回车/按钮确认，ESC 取消。
 struct SelectionView: View {
     let frame: ScreenFrame
     /// 确认（复制）时回调：屏幕局部 point 选区（有效性已过滤）
@@ -82,7 +82,7 @@ struct SelectionView: View {
                             }
                             .environment(\.adjustEnder) { adjustKind = nil }
 
-                        // 右下角按钮组（液态玻璃胶囊文字钮）：保存（复制左侧 12pt）+ 复制；位置 clamp——下方空间不足时收进选区内侧
+                        // 右下角按钮组（液态玻璃胶囊文字钮）：保存（复制左侧 8pt）+ 复制；位置 clamp——下方空间不足时收进选区内侧
                         let centers = Self.buttonCenters(sel: sel, bounds: geo.size)
                         ToolbarButton(label: "保存", action: save)
                             .position(x: centers.save.x, y: centers.save.y)
@@ -134,7 +134,6 @@ struct SelectionView: View {
             }
             .onExitCommand(perform: onCancel)
             .onAppear {
-                NSLog("Kacha SelectionView onAppear: screenPointSize=%@, imagePixelSize=%@, geoSize=%@", NSStringFromSize(frame.screenPointSize), NSStringFromSize(frame.imagePixelSize), NSStringFromSize(geo.size))
                 // 光标快照初始化 + 安装单一决策点 monitor（替代 cursorRect / onHover 方案）
                 cursorState.viewHeight = geo.size.height
                 cursorState.selection = selection
@@ -250,7 +249,7 @@ struct SelectionView: View {
         return nil
     }
 
-    /// 按钮组中心位置（单一公式源，按钮 position / 光标命中 / 父层手势 gate 三处共用）：
+    /// 按钮组中心位置（单一公式源，按钮 position / 光标命中两处共用）：
     /// 复制按钮在选区右下角外侧，保存按钮在其左 52pt（44 按钮 + 8 间距）；
     /// 右缘 clamp 到屏内、左缘 clamp ≥ 28（半钮宽 22 + 6 边距），下方空间不足时收进选区内侧
     static func buttonCenters(sel: CGRect, bounds: CGSize) -> (save: CGPoint, copy: CGPoint) {
@@ -262,7 +261,7 @@ struct SelectionView: View {
         return (CGPoint(x: saveX, y: y), CGPoint(x: copyX, y: y))
     }
 
-    /// 两个按钮的 44×24 命中框（与按钮 position 同一公式，供光标判定与父层手势 gate 使用）
+    /// 两个按钮的 44×24 命中框（与按钮 position 同一公式，供光标判定使用）
     private static func buttonFrames(sel: CGRect, in size: CGSize) -> [CGRect] {
         let c = buttonCenters(sel: sel, bounds: size)
         return [c.save, c.copy].map { CGRect(x: $0.x - 22, y: $0.y - 12, width: 44, height: 24) }

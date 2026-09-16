@@ -1,15 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// 诊断落盘（append，UTF-8）：NSLog 进 unified log 不可靠，改写 /tmp/kacha_diag.txt
-/// （本机 MacOSX27.0 SDK 的 String.write(to:) 无 append: 参数，用读-拼-写实现 append）
-private func diag(_ line: String) {
-    let url = URL(fileURLWithPath: "/tmp/kacha_diag.txt")
-    var text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-    text += line + "\n"
-    try? text.write(to: url, atomically: false, encoding: .utf8)
-}
-
 /// 用户完成框选后的动作：复制到剪贴板 / 保存为文件
 enum CaptureAction {
     case copy
@@ -55,7 +46,6 @@ final class OverlayController {
             hosting.frame = panel.contentView?.bounds ?? frame.screen.frame
             hosting.autoresizingMask = [.width, .height]
             panel.contentView = hosting
-            diag("panel#\(index): screen.frame=\(NSStringFromRect(frame.screen.frame)) image=\(frame.image.width)x\(frame.image.height) panel.frame=\(NSStringFromRect(panel.frame)) contentView.bounds=\(NSStringFromRect(panel.contentView?.bounds ?? .zero))")
             // 第一块屏的 panel 成为 key window（接收 ESC），其余仅前置
             if index == 0 {
                 panel.makeKeyAndOrderFront(nil)

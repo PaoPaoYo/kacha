@@ -1,15 +1,6 @@
 import AppKit
 import ScreenCaptureKit
 
-/// 诊断落盘（append，UTF-8）：NSLog 进 unified log 不可靠，改写 /tmp/kacha_diag.txt
-/// （本机 MacOSX27.0 SDK 的 String.write(to:) 无 append: 参数，用读-拼-写实现 append）
-private func diag(_ line: String) {
-    let url = URL(fileURLWithPath: "/tmp/kacha_diag.txt")
-    var text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-    text += line + "\n"
-    try? text.write(to: url, atomically: false, encoding: .utf8)
-}
-
 /// 一块屏幕与其冻结帧
 struct ScreenFrame {
     let screen: NSScreen
@@ -60,7 +51,6 @@ final class ScreenCaptureService {
             // 唯一可靠来源是 NSScreen point 尺寸 × backingScaleFactor（本机实测 1512×982×2.0=3024×1964）
             config.width = Int(screen.frame.width * screen.backingScaleFactor)
             config.height = Int(screen.frame.height * screen.backingScaleFactor)
-            diag("config=\(config.width)x\(config.height) screenPoint=\(Int(screen.frame.width))x\(Int(screen.frame.height)) scale=\(screen.backingScaleFactor)")
             do {
                 let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
                 frames.append(ScreenFrame(screen: screen, image: image))
