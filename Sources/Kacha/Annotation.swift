@@ -19,7 +19,7 @@ struct RGBA: Equatable {
 
 /// 标注工具；非 select 激活时接管选区内拖动为绘制
 enum AnnotationTool: Equatable {
-    case select, arrow, rect, ellipse, pen
+    case select, arrow, rect, ellipse, pen, mosaic
     var takesOverDrag: Bool { self != .select }
 }
 
@@ -51,6 +51,7 @@ struct Annotation: Identifiable, Equatable {
         case rect(CGRect)                         // 归一化
         case ellipse(CGRect)                      // 归一化
         case pen(points: [CGPoint])               // 归一化
+        case mosaic(points: [CGPoint])            // 归一化（复用 pen 采样/去重/有效性；颜色不参与渲染）
     }
 
     let id: UUID
@@ -129,7 +130,8 @@ enum AnnotationGeometry {
                                        y: selection.minY + n.minY * selection.height,
                                        width: n.width * selection.width,
                                        height: n.height * selection.height))
-        case let .pen(points):
+        case let .pen(points), let .mosaic(points):
+            // 同构折线（stroke 语义）；mosaic 的展宽与像素块化由渲染层处理
             guard let first = points.first else { break }
             path.move(to: localPoint(first, in: selection))
             for p in points.dropFirst() {
@@ -139,7 +141,7 @@ enum AnnotationGeometry {
         return path
     }
 
-    /// 松开时有效性：太小的标注丢弃（arrow/rect/ellipse 局部最长边 < 4pt；pen < 2 点）
+    /// 松开时有效性：太小的标注丢弃（arrow/rect/ellipse 局部最长边 < 4pt；pen/mosaic < 2 点）
     static func isValid(_ kind: Annotation.Kind, selectionSize: CGSize) -> Bool {
         let minimum: CGFloat = 4
         switch kind {
@@ -151,7 +153,7 @@ enum AnnotationGeometry {
             return max(n.width * selectionSize.width, n.height * selectionSize.height) >= minimum
         case let .ellipse(n):
             return max(n.width * selectionSize.width, n.height * selectionSize.height) >= minimum
-        case let .pen(points):
+        case let .pen(points), let .mosaic(points):
             return points.count >= 2
         }
     }

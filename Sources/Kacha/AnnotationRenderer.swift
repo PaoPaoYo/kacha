@@ -28,6 +28,25 @@ enum AnnotationRenderer {
         ctx.setLineJoin(.round)
         for a in annotations {
             let path = AnnotationGeometry.path(for: a.kind, in: selection, lineWidth: a.lineWidth)
+            // 马赛克：不走 stroke——路径按 lineWidth 展宽为区域，区域内底图像素块化（20pt 块，降采样放大）
+            if case .mosaic = a.kind,
+               let small = downsampledBlockImage(image, scale: scale, in: ctx) {
+                ctx.saveGState()
+                ctx.addPath(path)
+                ctx.setLineWidth(a.lineWidth)
+                ctx.replacePathWithStrokedPath()
+                ctx.clip()
+                ctx.interpolationQuality = .none
+                // 图像绘制遵循 CTM：当前 CTM 含 Y 翻转，直接画会上下镜像——先翻回再画，
+                // 保证块内容与底图位置一致（预览层 SwiftUI 无此问题，见 SelectionView）
+                ctx.saveGState()
+                ctx.translateBy(x: 0, y: selection.height)
+                ctx.scaleBy(x: 1, y: -1)
+                ctx.draw(small, in: CGRect(x: 0, y: 0, width: selection.width, height: selection.height))
+                ctx.restoreGState()
+                ctx.restoreGState()
+                continue
+            }
             ctx.addPath(path)
             ctx.setLineWidth(a.lineWidth)
             ctx.setStrokeColor(CGColor(red: a.color.r, green: a.color.g, blue: a.color.b, alpha: a.color.a))
@@ -41,5 +60,19 @@ enum AnnotationRenderer {
             }
         }
         return ctx.makeImage() ?? image
+    }
+
+    /// 底图降采样：块大小（像素）= 20 × scale；小图 = 原图 / 块（none 插值取样），
+    /// 放大回去（none 插值）即每块取一像素的块状马赛克
+    private static func downsampledBlockImage(_ image: CGImage, scale: CGFloat, in ctx: CGContext) -> CGImage? {
+        let blockSize = max(2, Int(20 * scale))
+        let smallW = max(1, image.width / blockSize)
+        let smallH = max(1, image.height / blockSize)
+        guard let smallCtx = CGContext(data: nil, width: smallW, height: smallH, bitsPerComponent: 8,
+                                       bytesPerRow: 0, space: ctx.colorSpace ?? image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!,
+                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        smallCtx.interpolationQuality = .none
+        smallCtx.draw(image, in: CGRect(x: 0, y: 0, width: smallW, height: smallH))
+        return smallCtx.makeImage()
     }
 }

@@ -39,7 +39,7 @@ struct SelectionView: View {
     // MARK: 标注状态（V3）
     /// 已完成的标注（撤销栈：撤销钮 removeLast 弹出）
     @State private var annotations: [Annotation] = []
-    /// 当前标注工具：select 不接管拖动；arrow/rect/ellipse/pen 接管选区内拖动为绘制
+    /// 当前标注工具：select 不接管拖动；arrow/rect/ellipse/pen/mosaic 接管选区内拖动为绘制
     @State private var activeTool: AnnotationTool = .select
     /// 当前标注颜色（色板 8 色之一）
     @State private var annotationColor: RGBA = .red
@@ -47,6 +47,8 @@ struct SelectionView: View {
     @State private var annotationWidth: AnnotationWidth = .medium
     /// 进行中的一笔标注（绘制手势期间持有；松开时 isValid 才入栈，随后清空）
     @State private var drawingAnnotation: Annotation?
+    /// 马赛克预览降采样图缓存（单条目，见 mosaicPreviewImage）
+    @State private var mosaicPreview = MosaicPreviewCache()
     /// 收起式弹出面板开关（互斥：同一时间至多展开一个，打开一个即关其他；面板为触发钮 overlay，不占布局）
     @State private var showColorPalette = false
     @State private var showWidthPicker = false
@@ -84,7 +86,8 @@ struct SelectionView: View {
                         .allowsHitTesting(false)
 
                     // 标注实时渲染（含进行中的一笔）：屏幕预览与 AnnotationRenderer 像素合成同构
-                    // （共用 AnnotationGeometry.path；线帽/线接 round 一致，arrow = 整体 stroke + eoFill 头）。
+                    // （共用 AnnotationGeometry.path；线帽/线接 round 一致，arrow = 整体 stroke + eoFill 头，
+                    // mosaic = clip 路径展宽 + 底图 20pt 块降采样放大）。
                     // 渲染在白边之后、move/绘制手势层之前；仅预览层不做命中（allowsHitTesting false）。
                     // 白色标注先 stroke 1pt separator 外扩描边再上色，浅色截图中仍可见（规格约束，仅预览层）。
                     Canvas { context, _ in
@@ -93,6 +96,18 @@ struct SelectionView: View {
                             // path 产出选区局部坐标（原点 = 视图原点），Canvas 原点 = sel.minX：平移对齐
                             ctx.translateBy(x: -sel.minX, y: -sel.minY)
                             let path = Path(AnnotationGeometry.path(for: a.kind, in: sel, lineWidth: a.lineWidth))
+                            if case .mosaic = a.kind {
+                                // 马赛克：涂抹路径展宽为 clip，冻结帧按选区裁剪、20pt 块降采样后放大
+                                // （与 AnnotationRenderer 输出同构；颜色不参与渲染，坐标为视图坐标 → 画到 sel）
+                                if let mosaic = mosaicPreviewImage(in: sel) {
+                                    ctx.clip(to: path.strokedPath(StrokeStyle(lineWidth: a.lineWidth,
+                                                                              lineCap: .round, lineJoin: .round)))
+                                    // 已在 CGContext 内以 none 插值块状放大到冻结帧原生分辨率，
+                                    // 此处按选区 rect 1:1 绘制（GraphicsContext 无插值控制 API）
+                                    ctx.draw(Image(decorative: mosaic, scale: 1), in: sel)
+                                }
+                                continue
+                            }
                             let color = Color(red: a.color.r, green: a.color.g, blue: a.color.b, opacity: a.color.a)
                             if a.color == .white {
                                 ctx.stroke(path, with: .color(Color(nsColor: .separatorColor)),
@@ -178,7 +193,7 @@ struct SelectionView: View {
                         }
 
                         // 选区右下角单行工具栏（紧贴选区）：
-                        // [选择|箭头|矩形|椭圆|画笔] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]；
+                        // [选择|箭头|矩形|椭圆|画笔|马赛克] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]；
                         // 色板/粗细/圆角面板为触发钮 overlay（浮于钮正上方、可盖选区、不占布局）。
                         // 整组布局（右缘锚点 / 底缘 / clamp / 面板光标带基底）见 toolbarRowLayout 单一公式源；
                         // 行内控件均为点击（无拖动手势），调整态父层手势已禁用，不会把操作漏进选区拖动
@@ -372,7 +387,7 @@ struct SelectionView: View {
     // MARK: 标注绘制
 
     /// 绘制中：把选区局部 point 归一化后写入 drawingAnnotation（clamp 由 normalizedPoint 承担）。
-    /// arrow = 起点/终点两点；rect/ellipse = 两点 min/max 的归一化矩形；pen = 采样去重后追加。
+    /// arrow = 起点/终点两点；rect/ellipse = 两点 min/max 的归一化矩形；pen/mosaic = 采样去重后追加。
     private func updateDrawing(to point: CGPoint, start: CGPoint, in sel: CGRect) {
         let color = annotationColor
         let width = annotationWidth.pt
@@ -402,6 +417,19 @@ struct SelectionView: View {
                     drawingAnnotation = drawing
                 }
             }
+        case .mosaic:
+            // 同 pen：采样归一化追加（去重 1pt）；颜色照存但不参与马赛克渲染
+            let p = AnnotationGeometry.normalizedPoint(point, in: sel)
+            if drawingAnnotation == nil {
+                drawingAnnotation = Annotation(kind: .mosaic(points: [AnnotationGeometry.normalizedPoint(start, in: sel)]),
+                                               color: color, lineWidth: width)
+            } else if var drawing = drawingAnnotation, case let .mosaic(points) = drawing.kind {
+                let lastLocal = points.last.map { AnnotationGeometry.localPoint($0, in: sel) }
+                if AnnotationGeometry.shouldAppendPenPoint(point, after: lastLocal) {
+                    drawing.kind = .mosaic(points: points + [p])
+                    drawingAnnotation = drawing
+                }
+            }
         }
     }
 
@@ -411,6 +439,45 @@ struct SelectionView: View {
             annotations.append(drawing)
         }
         drawingAnnotation = nil
+    }
+
+    /// 马赛克预览图（带单条目缓存）：依赖只有冻结帧与选区，涂抹拖动期间选区不变，同选区复用
+    /// （引用类型缓存：@State 持有不触发视图刷新，Canvas 绘制期只读）
+    private func mosaicPreviewImage(in sel: CGRect) -> CGImage? {
+        if mosaicPreview.sel == sel, let cached = mosaicPreview.image { return cached }
+        let image = Self.makeMosaicPreview(base: frame.image, pointSize: frame.screenPointSize, sel: sel)
+        mosaicPreview.sel = sel
+        mosaicPreview.image = image
+        return image
+    }
+
+    /// 预览与 AnnotationRenderer 输出同构：冻结帧按选区像素裁剪（CGImage 图像坐标，左上原点）→
+    /// 块 = 20pt × 像素/点，降采样成一像素（none 取样）→ none 插值放回裁剪尺寸（块状观感）。
+    /// nil = 裁剪/降采样失败（该笔预览跳过，输出层 AnnotationRenderer 仍正常）
+    private static func makeMosaicPreview(base: CGImage, pointSize: CGSize, sel: CGRect) -> CGImage? {
+        let pixelScale = CGFloat(base.width) / max(pointSize.width, 1)
+        guard pixelScale > 0 else { return nil }
+        let imageBounds = CGRect(x: 0, y: 0, width: base.width, height: base.height)
+        let crop = imageBounds.intersection(CGRect(x: sel.minX * pixelScale, y: sel.minY * pixelScale,
+                                                   width: sel.width * pixelScale, height: sel.height * pixelScale))
+        guard !crop.isEmpty, crop.width >= 1, crop.height >= 1,
+              let cropped = base.cropping(to: crop) else { return nil }
+        let space = cropped.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let block = max(2, Int(20 * pixelScale))
+        let smallW = max(1, cropped.width / block)
+        let smallH = max(1, cropped.height / block)
+        guard let smallCtx = CGContext(data: nil, width: smallW, height: smallH, bitsPerComponent: 8,
+                                       bytesPerRow: 0, space: space,
+                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        smallCtx.interpolationQuality = .none
+        smallCtx.draw(cropped, in: CGRect(x: 0, y: 0, width: smallW, height: smallH))
+        guard let small = smallCtx.makeImage(),
+              let bigCtx = CGContext(data: nil, width: cropped.width, height: cropped.height,
+                                     bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        bigCtx.interpolationQuality = .none
+        bigCtx.draw(small, in: CGRect(x: 0, y: 0, width: cropped.width, height: cropped.height))
+        return bigCtx.makeImage()
     }
 
     /// 两点 min/max 的归一化矩形（x/y/w/h 由两点 min/max；clamp 由 normalizedPoint 逐角承担）
@@ -481,10 +548,10 @@ struct SelectionView: View {
     /// 时组底缘 sel.maxY + 28（主行中心 sel.maxY + 16），否则收进选区内侧组底缘 sel.maxY - 4
     /// （主行中心 sel.maxY - 16，上下对称留 4pt）。
     static func toolbarRowLayout(sel: CGRect, bounds: CGSize) -> (right: CGFloat, bottom: CGFloat, row: CGRect) {
-        // 主行实际宽 ≈387（工具 5×24 + 4×6 ＋ 分隔 1 ＋ 色钮 24 ＋ 粗细钮 24 ＋ 圆角钮 48 ＋ 分隔 1
-        // ＋ 撤销 24 ＋ 分隔 1 ＋ 保存钮 24 ＋ 复制钮 24 ＋ 9×8 段间距），左缘含约 9pt 容差 → 396，
+        // 主行实际宽 ≈417（工具 6×24 + 5×6 ＋ 分隔 1 ＋ 色钮 24 ＋ 粗细钮 24 ＋ 圆角钮 48 ＋ 分隔 1
+        // ＋ 撤销 24 ＋ 分隔 1 ＋ 保存钮 24 ＋ 复制钮 24 ＋ 9×8 段间距），左缘含约 9pt 容差 → 426，
         // 仅用于面板光标带基底与左缘 clamp；实际渲染用右缘 pin + offset，不依赖该估算。
-        let rowWidth: CGFloat = 396
+        let rowWidth: CGFloat = 426
         let rowHeight: CGFloat = 24
         var right = sel.maxX
         if right - rowWidth < 6 {
@@ -547,6 +614,13 @@ struct SelectionView: View {
         // d. 其余（遮罩区域、工具栏、二级面板）→ 默认箭头（macOS 惯例：按钮 hover 也是箭头）
         NSCursor.arrow.set()
     }
+}
+
+/// 马赛克预览降采样图的单条目缓存：引用类型，@State 持有不触发视图刷新
+///（涂抹拖动期间选区不变，Canvas 每帧重绘直接命中缓存，避免反复分配全尺寸位图）
+private final class MosaicPreviewCache {
+    var sel: CGRect = .zero
+    var image: CGImage?
 }
 
 /// 光标决策所用的可变快照：@State 持同一引用实例，monitor 闭包每次读到最新值
@@ -629,10 +703,10 @@ private struct ToolbarIconButton: View {
 }
 
 /// 选区右下角单行工具栏（24pt 主行 + 收起式弹出面板）：
-/// [选择|箭头|矩形|椭圆|画笔] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]。
+/// [选择|箭头|矩形|椭圆|画笔|马赛克] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]。
 /// 色板/粗细/圆角面板为触发钮的 overlay：浮于钮正上方（间隙 4pt）、可盖选区、不占布局（组高恒 24）。
 /// 互斥至多展开一个：色/粗细选中即收起，圆角拖动不收起（再点圆角钮收起）。
-/// arrow/rect/ellipse/pen 的绘制手势由 SelectionView 经 activeTool.takesOverDrag 接入选区拖动。
+/// arrow/rect/ellipse/pen/mosaic 的绘制手势由 SelectionView 经 activeTool.takesOverDrag 接入选区拖动。
 private struct CaptureToolbar: View {
     @Binding var tool: AnnotationTool
     @Binding var color: RGBA
@@ -667,6 +741,7 @@ private struct CaptureToolbar: View {
                 ToolbarIconButton(symbol: "rectangle", selected: tool == .rect, accessibilityLabel: "矩形") { tool = .rect }
                 ToolbarIconButton(symbol: "circle", selected: tool == .ellipse, accessibilityLabel: "椭圆") { tool = .ellipse }
                 ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
+                ToolbarIconButton(symbol: "checkerboard.rectangle", selected: tool == .mosaic, accessibilityLabel: "马赛克") { tool = .mosaic }
             }
             separator
             currentColorButton

@@ -58,6 +58,15 @@ final class AnnotationTests: XCTestCase {
         XCTAssertTrue(AnnotationGeometry.isValid(.pen(points: [CGPoint(x: 0.5, y: 0.5), CGPoint(x: 0.6, y: 0.5)]), selectionSize: sel.size))
     }
 
+    func test_valid_mosaicNeedsTwoPoints() {
+        // mosaic 复用 pen 有效性语义（≥2 点）
+        XCTAssertFalse(AnnotationGeometry.isValid(.mosaic(points: [CGPoint(x: 0.5, y: 0.5)]), selectionSize: sel.size))
+    }
+
+    func test_valid_mosaicTwoPointsValid() {
+        XCTAssertTrue(AnnotationGeometry.isValid(.mosaic(points: [CGPoint(x: 0.5, y: 0.5), CGPoint(x: 0.6, y: 0.5)]), selectionSize: sel.size))
+    }
+
     // MARK: path
 
     func test_path_rectBoundingBox() {
@@ -83,5 +92,14 @@ final class AnnotationTests: XCTestCase {
     func test_path_penPolyline() {
         let p = AnnotationGeometry.path(for: .pen(points: [CGPoint(x: 0, y: 0), CGPoint(x: 1, y: 1)]), in: sel, lineWidth: 4)
         XCTAssertEqual(p.boundingBox, CGRect(x: 100, y: 50, width: 200, height: 100))
+    }
+
+    func test_path_mosaicMatchesPenPolyline() {
+        // mosaic 与 pen 同构：同点集折线（stroke 语义，展宽由渲染层处理）
+        let points = [CGPoint(x: 0, y: 0.2), CGPoint(x: 0.5, y: 0.8), CGPoint(x: 1, y: 0.4)]
+        let mosaic = AnnotationGeometry.path(for: .mosaic(points: points), in: sel, lineWidth: 4)
+        let pen = AnnotationGeometry.path(for: .pen(points: points), in: sel, lineWidth: 4)
+        XCTAssertEqual(mosaic.boundingBox, pen.boundingBox)
+        XCTAssertEqual(mosaic.boundingBox, CGRect(x: 100, y: 70, width: 200, height: 60))
     }
 }

@@ -44,4 +44,29 @@ final class AnnotationRendererTests: XCTestCase {
         let out = AnnotationRenderer.composite(base, annotations: [], selectionPointWidth: 50)
         XCTAssertTrue(out === base)
     }
+
+    func test_composite_mosaicPixelatesRegionIgnoringColor() {
+        // 底图：bitmap 顶部 20 行黑、其余白（CG 底左原点：顶部 = y 80..100）
+        let ctx = CGContext(data: nil, width: 100, height: 100, bitsPerComponent: 8,
+                            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 80, width: 100, height: 20))
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 100, height: 80))
+        let base = ctx.makeImage()!
+        // 横向涂抹 point y=10（落在顶部黑块内）；红色不参与马赛克渲染
+        let a = Annotation(kind: .mosaic(points: [CGPoint(x: 0.2, y: 0.1), CGPoint(x: 0.8, y: 0.1)]),
+                           color: .red, lineWidth: 4)
+        let out = AnnotationRenderer.composite(base, annotations: [a], selectionPointWidth: 100)
+        // 涂抹区内：块化取样自顶部黑块 → 黑（若被红色染色或上下镜像取到白块则失败）
+        let inside = pixel(out, 50, 10)
+        XCTAssertLessThan(Int(inside.0) + Int(inside.1) + Int(inside.2), 120)
+        // 涂抹区横向之外（x=5 不在 20..80 折线上）仍为底图黑块（clip 未外溢）
+        let beside = pixel(out, 5, 10)
+        XCTAssertLessThan(Int(beside.0) + Int(beside.1) + Int(beside.2), 120)
+        // 黑块之外的底图白区不受影响
+        let middle = pixel(out, 50, 50)
+        XCTAssertGreaterThan(Int(middle.0) + Int(middle.1) + Int(middle.2), 700)
+    }
 }
