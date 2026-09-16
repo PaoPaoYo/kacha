@@ -566,24 +566,27 @@ private struct SizeBadge: View {
 }
 
 /// 液态玻璃圆形图标钮（24×24）：标注工具 / 撤销 / 保存 / 复制共用规格；
-/// selected 时 accent 描边高亮（仅选择态工具钮用，动作钮恒 false）
+/// selected 时 accent 描边高亮（仅选择态工具钮用，动作钮恒 false）；
+/// tint 非 nil 时玻璃叠加色染色、图标转白，形成实心主按钮（primary action）观感
 private struct ToolbarIconButton: View {
     let symbol: String
     let selected: Bool
     /// 无障碍标签（图标钮可读性，全部钮显式传入中文名）
     let accessibilityLabel: String
+    /// 玻璃染色（如复制钮 accent 主按钮观感）；nil = regular 玻璃 + primary 前景
+    var tint: Color? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.primary)
+                .foregroundStyle(tint != nil ? Color.white : .primary)
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .glassEffect(in: Circle())
+        .glassEffect(tint.map { .regular.tint($0) } ?? .regular, in: Circle())
         .accessibilityLabel(accessibilityLabel)
         .overlay {
             if selected {
@@ -642,7 +645,8 @@ private struct CaptureToolbar: View {
                 .opacity(canUndo ? 1 : 0.4)
                 .disabled(!canUndo)
             separator
-            // 动作钮：与其他工具钮统一 24×24 玻璃圆钮规格（无选中态），accessibilityLabel 保可读性
+            // 动作钮：与其他工具钮统一 24×24 玻璃圆钮规格（无选中态），accessibilityLabel 保可读性；
+            // 复制 = 主操作：accent tint 玻璃 + 白色图标（实心主按钮观感），保存保持 regular
             ToolbarIconButton(symbol: "square.and.arrow.down",
                               selected: false,
                               accessibilityLabel: "保存",
@@ -650,6 +654,7 @@ private struct CaptureToolbar: View {
             ToolbarIconButton(symbol: "doc.on.doc",
                               selected: false,
                               accessibilityLabel: "复制",
+                              tint: Color(nsColor: .controlAccentColor),
                               action: onCopy)
         }
         .frame(height: 24)
@@ -707,14 +712,14 @@ private struct CaptureToolbar: View {
         }
     }
 
-    /// 圆角钮（玻璃胶囊：ruler 符号 + 当前值 10pt monospacedDigit；probe 实证 ruler 存在）：
-    /// 点击展开/收起圆角滑条面板（浮于钮正上方；滑条拖动不收起，再点钮收起）
+    /// 圆角钮（玻璃胶囊：rectangle.roundedtop 圆角矩形符号（比 ruler 更直观，probe 实证存在）
+    /// + 当前值 10pt monospacedDigit）：点击展开/收起圆角滑条面板（浮于钮正上方；滑条拖动不收起，再点钮收起）
     private var radiusButton: some View {
         Button {
             togglePanel { showRadiusSlider.toggle() }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: "ruler")
+                Image(systemName: "rectangle.roundedtop")
                     .font(.system(size: 12, weight: .medium))
                 Text("\(Int(cornerRadius))")
                     .font(.system(size: 10, weight: .medium).monospacedDigit())
