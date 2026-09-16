@@ -116,20 +116,34 @@ struct SelectionView: View {
                         .allowsHitTesting(false)
 
                     if phase == .adjusting {
-                        // 选区内：拖动整体移动 + 双击确认
+                        // 选区内：拖动整体移动 + 双击确认。
+                        // 命中泄漏根因：contentShape 必须放在 position 之前——position 把子视图包进
+                        // 「占满全部可用空间」的定位容器（bounds = 整个 ZStack = 整屏），contentShape
+                        // 挂在其后定义的命中形状就是容器全屏 bounds，遮罩区远处的拖动也能触发 move
+                        // （自 V2 潜伏；挂在其前，命中形状 = 选区尺寸的子视图本身）
                         Color.clear
                             .frame(width: sel.width, height: sel.height)
-                            .position(x: sel.midX, y: sel.midY)
                             .contentShape(Rectangle())
+                            .position(x: sel.midX, y: sel.midY)
                             .gesture(
                                 DragGesture(minimumDistance: 1, coordinateSpace: .named("sel"))
                                     .onChanged { value in
+                                        // 双保险（防御层）：只有起点在选区内（±2pt 容差）才允许开始移动；
+                                        // 只在起始判定（adjustKind == nil）时检查——移动中 selection 随拖拽
+                                        // 平移，起点相对「当前选区」无参照意义，逐帧复查会把正常长拖误杀
                                         if adjustKind == nil {
+                                            guard selection.insetBy(dx: -2, dy: -2).contains(value.startLocation) else { return }
                                             beginAdjust(.move, at: value.startLocation)
                                         }
                                         updateAdjust(to: value.location, in: geo.size)
                                     }
-                                    .onEnded { _ in adjustKind = nil }
+                                    .onEnded { value in
+                                        // 同源防御：起点在选区外的手势结束不触碰状态（其开始已被 onChanged 拦截）；
+                                        // 本层自己的 .move 结束照常清 adjustKind（不按已平移的当前选区复查起点）
+                                        if adjustKind == .move || selection.insetBy(dx: -2, dy: -2).contains(value.startLocation) {
+                                            adjustKind = nil
+                                        }
+                                    }
                             )
                             .onTapGesture(count: 2) { confirm() }
 
@@ -148,10 +162,12 @@ struct SelectionView: View {
                         // 「选择」工具时本层不存在，恢复 move/手柄/双击现状。
                         // minimumDistance 0：原地点击也走 onChanged/onEnded（点一下的无效小标注由 isValid 丢弃）
                         if activeTool.takesOverDrag {
+                            // 绘制层与 move 层同型泄漏：contentShape 同样移到 position 之前，
+                            // 命中限定在选区尺寸内（否则绘制工具激活时遮罩区拖动会喂进 updateDrawing）
                             Color.clear
                                 .frame(width: sel.width, height: sel.height)
-                                .position(x: sel.midX, y: sel.midY)
                                 .contentShape(Rectangle())
+                                .position(x: sel.midX, y: sel.midY)
                                 .gesture(
                                     DragGesture(minimumDistance: 0, coordinateSpace: .named("sel"))
                                         .onChanged { value in
