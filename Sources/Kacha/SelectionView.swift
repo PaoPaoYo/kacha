@@ -319,7 +319,7 @@ struct SelectionView: View {
     }
 
     /// 按钮行（圆角滑条胶囊 + 保存 + 复制）布局单一公式源（渲染 offset / 光标命中区共用）：
-    /// 右缘锚定原复制钮右缘（copyX + 22，copyX 沿用 buttonCenters clamp——贴右缘选区时已收进屏内）；
+    /// 右缘锚定选区白边右缘（sel.maxX，与边框对齐）；
     /// 左缘出屏时整行右移（滑条优先保证可见，右缘允许越过锚点）；y 沿用按钮 y
     /// （belowFits ? sel.maxY + 20 : sel.maxY - 20，下方放不下时整行随按钮一起收进选区内侧）。
     /// 行宽 376 为估算常量（胶囊 ≈256 + 12 + 保存 44 + 12 + 复制 44，命中区左缘含约 8pt 容差），仅用于光标命中区；
@@ -327,7 +327,7 @@ struct SelectionView: View {
     static func toolbarRowLayout(sel: CGRect, bounds: CGSize) -> (right: CGFloat, centerY: CGFloat, zone: CGRect) {
         let rowWidth: CGFloat = 376
         let centers = buttonCenters(sel: sel, bounds: bounds)
-        var right = centers.copy.x + 22
+        var right = sel.maxX
         if right - rowWidth < 6 {
             right = 6 + rowWidth
         }
