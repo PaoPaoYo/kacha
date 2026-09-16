@@ -354,3 +354,76 @@ git commit -m "feat: 悬停高亮窗口，点击进入调整态
 
 Co-Authored-By: Claude Code <noreply@anthropic.com>"
 ```
+
+---
+
+### Task 4: 截图圆角（底部原生滑动条实时调整）（2026-09-16 用户迭代需求）
+
+**Files:**
+- Modify: `Sources/Kacha/SelectionView.swift`
+- Modify: `Sources/Kacha/OverlayController.swift`
+
+**Interfaces:**
+- Consumes: Task 3 的调整态结构（phase/selection/按钮组/confirm/save）、handleConfirm 裁剪链路
+- Produces:
+  - `SelectionView` 的 `onConfirm`/`onSave` 签名变为 `(CGRect, CGFloat) -> Void`（第二参数 = 圆角半径 point）
+  - `OverlayController.handleConfirm(frame:pointRect:cornerRadius:action:)` 内部裁剪后按需圆角化
+  - `OverlayController` 私有 `roundedCornerImage(_ image: CGImage, pixelRadius: CGFloat) -> CGImage`（alpha 圆角化）
+
+**规格：**
+- 调整态屏幕底部中央显示液态玻璃容器（Capsule）：「圆角」标签 + 原生 `Slider(value: 0...40, step: 1)`（宽 160）+ 当前数值（等宽数字）；每次截图会话重置为 0
+- 实时预览：选区白边 `Rectangle` → `RoundedRectangle(cornerRadius: r)`（strokeBorder 不变）
+- 输出（复制/保存统一）：r > 0 时裁剪图经 CGContext 圆角化（`CGPath(roundedRect:)` clip + premultiplied alpha），pixelRadius = point 半径 × (imagePixelSize / screenPointSize)；r == 0 跳过（零成本直通）
+- 滑动条命中区不与选区手势冲突（选区外无操作已保证）；光标 pointer
+- 提交信息：`feat: 截图圆角，底部滑动条实时调整`，末尾 Co-Authored-By: Claude Code <noreply@anthropic.com>
+
+**实现要点：**
+
+SelectionView：
+```swift
+@State private var cornerRadius: Double = 0
+// 调整态渲染（按钮组之后）：
+HStack(spacing: 12) {
+    Text("圆角").font(.system(size: 12, weight: .medium))
+    Slider(value: $cornerRadius, in: 0...40, step: 1).frame(width: 160)
+    Text("\(Int(cornerRadius))").font(.system(size: 12, weight: .medium).monospacedDigit()).frame(width: 24)
+}
+.padding(.horizontal, 14).padding(.vertical, 8)
+.glassEffect(in: Capsule())
+.position(x: geo.size.width / 2, y: geo.size.height - 36)
+// confirm()/save() 调用改为 onConfirm(selection, CGFloat(cornerRadius)) / onSave(selection, CGFloat(cornerRadius))
+// 白边：Rectangle().strokeBorder(.white, lineWidth: 1) 改 RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(.white, lineWidth: 1)（frame/position 不变）
+```
+
+OverlayController：
+```swift
+// handleConfirm 增参 cornerRadius: CGFloat；裁剪后：
+let output: CGImage
+if cornerRadius > 0 {
+    let scale = frame.imagePixelSize.width / frame.screenPointSize.width
+    output = roundedCornerImage(cropped, pixelRadius: cornerRadius * scale)
+} else {
+    output = cropped
+}
+onCapture(output, action)
+
+/// alpha 圆角化（premultiplied）；失败时退回原图
+private func roundedCornerImage(_ image: CGImage, pixelRadius: CGFloat) -> CGImage {
+    let w = image.width, h = image.height
+    guard w > 0, h > 0, pixelRadius > 0,
+          let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+          let _ = (ctx.addPath(CGPath(roundedRect: CGRect(x: 0, y: 0, width: w, height: h),
+                                      cornerWidth: pixelRadius, cornerHeight: pixelRadius, transform: nil)),
+                   ctx.clip(), ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h)), Optional(()))
+    else { return image }
+    return ctx.makeImage() ?? image
+}
+```
+（SelectionView 两个闭包初始化处同步传 radius；SelectionView 白边在 dragging 态也用 cornerRadius？dragging 时 cornerRadius 恒 0，等价直角 ✓ 共用一处代码即可。）
+
+- [ ] Step 1: 实现两个文件改动（SelectionView UI+状态+签名；OverlayController 签名+圆角化）
+- [ ] Step 2: `swift build && swift test`（30/30 仍过）→ `make app`
+- [ ] Step 3: 用户 GUI 冒烟（滑动条显示/拖动流畅/白边预览/输出圆角 PNG 透明角/复制保存都圆角/滑条不干扰手势）
+- [ ] Step 4: Commit（信息见上）
