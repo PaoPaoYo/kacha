@@ -3,6 +3,7 @@ import SwiftUI
 /// 单屏框选视图：冻结帧 + 35% 黑遮罩挖洞 + 1pt 白边 + 液态玻璃尺寸胶囊。
 /// 两段式交互：拖拽框选（或 idle 态点击窗口，蓝描边悬停高亮）→ 松开进入调整态
 /// （角/边缩放、内部平移）→ 双击/回车/按钮确认，ESC 取消。
+/// 调整态右下角两行工具栏组（V3：标注工具行 + 输出行；标注绘制手势由 Task 4 接入）。
 struct SelectionView: View {
     let frame: ScreenFrame
     /// 本屏窗口矩形（局部坐标、front-to-back）；悬停高亮与点击选中用
@@ -34,6 +35,17 @@ struct SelectionView: View {
     @State private var hoveredWindow: CGRect? = nil
     /// 输出圆角半径（point）：底部滑动条实时调整；@AppStorage 持久化到 UserDefaults，跨会话记忆上次值
     @AppStorage("cornerRadius") private var cornerRadius: Double = 0
+    // MARK: 标注状态（V3 Task 3：仅状态与 UI；选区内绘制手势由 Task 4 接入）
+    /// 已完成的标注（撤销栈：撤销钮 removeLast 弹出）
+    @State private var annotations: [Annotation] = []
+    /// 当前标注工具：select 不接管拖动；arrow/rect/ellipse/pen 由 Task 4 接管选区内拖动为绘制
+    @State private var activeTool: AnnotationTool = .select
+    /// 当前标注颜色（色板 8 色之一）
+    @State private var annotationColor: RGBA = .red
+    /// 当前标注粗细（三档）
+    @State private var annotationWidth: AnnotationWidth = .medium
+    /// 进行中的一笔标注（Task 4 手势期间持有；本任务仅声明不消费）
+    @State private var drawingAnnotation: Annotation?
 
     var body: some View {
         GeometryReader { geo in
@@ -99,29 +111,37 @@ struct SelectionView: View {
                             }
                             .environment(\.adjustEnder) { adjustKind = nil }
 
-                        // 选区右下角按钮行：圆角滑条（实时更新白边预览与输出半径）+ 保存 + 复制，
-                        // 整行布局（右缘锚点 / y / clamp / 光标命中区）见 toolbarRowLayout 单一公式源；
-                        // 行内滑条命中区在选区外亦不与父层手势冲突（调整态父层手势已禁用）
-                        let row = Self.toolbarRowLayout(sel: sel, bounds: geo.size)
-                        HStack(spacing: 12) {
+                        // 选区右下角两行工具栏组（VStack(alignment: .trailing, spacing: 8)，组高 56 = 24 + 8 + 24）：
+                        // 上行 = 标注工具行（工具 / 色板 / 粗细 / 撤销），下行 = 输出行（圆角滑条 + 保存 + 复制）。
+                        // 整组布局（右缘锚点 / y / clamp / 光标命中区）见 toolbarRowLayout 单一公式源；
+                        // 行内控件均为点击（无拖动手势），调整态父层手势已禁用，不会把操作漏进选区拖动
+                        let group = Self.toolbarRowLayout(sel: sel, bounds: geo.size)
+                        VStack(alignment: .trailing, spacing: 8) {
+                            AnnotationToolbar(tool: $activeTool,
+                                              color: $annotationColor,
+                                              lineWidth: $annotationWidth,
+                                              canUndo: !annotations.isEmpty,
+                                              onUndo: undoLastAnnotation)
                             HStack(spacing: 12) {
-                                Text("圆角").font(.system(size: 12, weight: .medium))
-                                Slider(value: $cornerRadius, in: 0...40, step: 1)
-                                    .frame(width: 160)
-                                Text("\(Int(cornerRadius))")
-                                    .font(.system(size: 12, weight: .medium).monospacedDigit())
-                                    .frame(width: 24)
+                                HStack(spacing: 12) {
+                                    Text("圆角").font(.system(size: 12, weight: .medium))
+                                    Slider(value: $cornerRadius, in: 0...40, step: 1)
+                                        .frame(width: 160)
+                                    Text("\(Int(cornerRadius))")
+                                        .font(.system(size: 12, weight: .medium).monospacedDigit())
+                                        .frame(width: 24)
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(height: 24)
+                                .glassEffect(in: Capsule())
+                                ToolbarButton(label: "保存", action: save)
+                                ToolbarButton(label: "复制", action: confirm)
                             }
-                            .padding(.horizontal, 10)
-                            .frame(height: 24)
-                            .glassEffect(in: Capsule())
-                            ToolbarButton(label: "保存", action: save)
-                            ToolbarButton(label: "复制", action: confirm)
                         }
-                        // 右缘先 pin 到屏右、再 offset 到锚点：右对齐不依赖行宽（行宽随内容自适应）
+                        // 组右缘先 pin 到屏右、再 offset 到锚点：右对齐不依赖行宽（行宽随内容自适应）
                         .frame(width: geo.size.width, height: geo.size.height,
                                alignment: Alignment(horizontal: .trailing, vertical: .center))
-                        .offset(x: row.right - geo.size.width, y: row.centerY - geo.size.height / 2)
+                        .offset(x: group.right - geo.size.width, y: group.centerY - geo.size.height / 2)
                     }
                 }
             }
@@ -174,7 +194,7 @@ struct SelectionView: View {
             .onChange(of: selection) { _, new in
                 cursorState.selection = new
                 cursorState.hasSelection = SelectionGeometry.isValid(new)
-                // 按钮行命中区与渲染 offset 用同一公式（toolbarRowLayout）；非调整态置空
+                // 工具栏组（两行）命中区与渲染 offset 用同一公式（toolbarRowLayout）；非调整态置空
                 cursorState.toolbarZone = phase == .adjusting ? Self.toolbarRowLayout(sel: new, bounds: geo.size).zone : .zero
             }
             .onChange(of: geo.size.height) { _, new in
@@ -273,6 +293,13 @@ struct SelectionView: View {
         onSave(selection, CGFloat(cornerRadius))
     }
 
+    /// 撤销最后一笔标注（工具行撤销钮）：空栈无操作（钮同时 40% 透明禁用）
+    private func undoLastAnnotation() {
+        if !annotations.isEmpty {
+            annotations.removeLast()
+        }
+    }
+
     /// 移除光标 monitor（幂等）：覆盖窗被 dismissAll 时经通知触发，onDisappear 兜底重复调用
     private func removeCursorMonitor() {
         if let cursorMonitor {
@@ -307,8 +334,10 @@ struct SelectionView: View {
         return nil
     }
 
-    /// 按钮行锚点（单一公式源，toolbarRowLayout 消费）：复制钮中心 x/y 决定整行右缘锚点与 y；
-    /// 右缘 clamp 到屏内、下方空间不足时 y 收进选区内侧
+    /// V2 单行按钮锚点公式（ButtonCentersTests 钉住防回归）：copyX/saveX 右缘 clamp / 左缘下界、
+    /// y = belowFits ? sel.maxY + 20 : sel.maxY - 20（单行 24pt 时代的 belowFits = sel.maxY + 36 <= 高）。
+    /// V3 工具栏扩为两行组后，渲染与光标命中区改由 toolbarRowLayout 的组公式决定
+    /// （belowFits 改用组总高 56）；本函数不再被渲染消费，仅作 V2 公式存档与测试钉。
     static func buttonCenters(sel: CGRect, bounds: CGSize) -> (save: CGPoint, copy: CGPoint) {
         let spacing: CGFloat = 52
         let copyX = min(sel.maxX - 16, bounds.width - 28)
@@ -318,20 +347,29 @@ struct SelectionView: View {
         return (CGPoint(x: saveX, y: y), CGPoint(x: copyX, y: y))
     }
 
-    /// 按钮行（圆角滑条胶囊 + 保存 + 复制）布局单一公式源（渲染 offset / 光标命中区共用）：
-    /// 右缘锚定选区白边右缘（sel.maxX，与边框对齐）；
-    /// 左缘出屏时整行右移（滑条优先保证可见，右缘允许越过锚点）；y 沿用按钮 y
-    /// （belowFits ? sel.maxY + 20 : sel.maxY - 20，下方放不下时整行随按钮一起收进选区内侧）。
-    /// 行宽 376 为估算常量（胶囊 ≈256 + 12 + 保存 44 + 12 + 复制 44，命中区左缘含约 8pt 容差），仅用于光标命中区；
-    /// 实际渲染用右缘 pin + offset，不依赖该估算。
+    /// 两行工具栏组（标注工具行 + 输出行，VStack spacing 8，组高 56 = 24 + 8 + 24）布局单一公式源
+    /// （渲染 offset / 光标命中区共用）：组右缘锚定选区白边右缘（sel.maxX，与边框对齐）；
+    /// 左缘出屏时整组右移（rowWidth 取较宽的标注行估算，保证命中区覆盖两行，右缘允许越过锚点）；
+    /// y 用组整体判定贴底/收内侧（belowFits 用组总高）：选区下方放得下整组（组上缘贴选区下 8pt、
+    /// 组下缘再留 8pt 屏底余量）时整组在选区外侧下方，否则整组收进选区内侧（组下缘离选区下缘 8pt，
+    /// 此时输出行落位与 V2 单行完全一致：中心 sel.maxY - 20）。
     static func toolbarRowLayout(sel: CGRect, bounds: CGSize) -> (right: CGFloat, centerY: CGFloat, zone: CGRect) {
-        let rowWidth: CGFloat = 376
-        let centers = buttonCenters(sel: sel, bounds: bounds)
+        // 标注行估算宽 ≈451（工具 5×24 + 4×6 ＋ 分隔 1 ＋ 色板 8×14 + 7×6 ＋ 分隔 1 ＋ 粗细 3×18 + 2×6
+        // ＋ 分隔 1 ＋ 撤销 24 ＋ 6×10 段间距），命中区左缘含约 9pt 容差 → 460，仅用于光标命中区与左缘 clamp；
+        // 实际渲染用右缘 pin + offset，不依赖该估算。
+        let rowWidth: CGFloat = 460
+        let groupHeight: CGFloat = 56   // 24（工具行）+ 8（行距）+ 24（输出行）
         var right = sel.maxX
         if right - rowWidth < 6 {
             right = 6 + rowWidth
         }
-        return (right, centers.copy.y, CGRect(x: right - rowWidth, y: centers.copy.y - 18, width: rowWidth, height: 36))
+        // belowFits 用组总高：组上缘贴选区下 8pt、组下缘留 8pt 屏底余量
+        let belowFits = sel.maxY + 8 + groupHeight + 8 <= bounds.height
+        let centerY = belowFits ? sel.maxY + 8 + groupHeight / 2 : sel.maxY - 8 - groupHeight / 2
+        // 光标命中区 = 组整体矩形 + 上下各 6pt 容差（与 V2 单行 ±6 一致）
+        let zone = CGRect(x: right - rowWidth, y: centerY - groupHeight / 2 - 6,
+                          width: rowWidth, height: groupHeight + 12)
+        return (right, centerY, zone)
     }
 
     /// 单一光标决策点：mouseMoved / leftMouseDragged 统一在此判定（cursorRect 已停用）
@@ -435,6 +473,122 @@ private struct ToolbarButton: View {
         }
         .buttonStyle(.plain)
         .glassEffect(in: Capsule())
+    }
+}
+
+/// 液态玻璃圆形图标钮（24×24）：标注工具 / 撤销共用规格；selected 时 accent 描边高亮
+private struct ToolbarIconButton: View {
+    let symbol: String
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.primary)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .glassEffect(in: Circle())
+        .overlay {
+            if selected {
+                Circle().strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
+            }
+        }
+    }
+}
+
+/// 标注工具行（24pt）：5 工具玻璃圆钮 ─ 分隔 ─ 8 色板圆点 ─ 分隔 ─ 3 粗细圆点 ─ 分隔 ─ 撤销钮。
+/// V3 Task 3 仅状态与 UI（选中态 accent 高亮、撤销弹出 annotations 栈）；
+/// arrow/rect/ellipse/pen 的绘制手势由 Task 4 经 activeTool.takesOverDrag 接入选区拖动。
+private struct AnnotationToolbar: View {
+    @Binding var tool: AnnotationTool
+    @Binding var color: RGBA
+    @Binding var lineWidth: AnnotationWidth
+    /// 撤销可用（annotations 非空）：不可用时撤销钮 40% 透明并禁用
+    let canUndo: Bool
+    let onUndo: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                ToolbarIconButton(symbol: "move", selected: tool == .select) { tool = .select }
+                ToolbarIconButton(symbol: "arrow.up.right", selected: tool == .arrow) { tool = .arrow }
+                ToolbarIconButton(symbol: "rectangle", selected: tool == .rect) { tool = .rect }
+                ToolbarIconButton(symbol: "circle", selected: tool == .ellipse) { tool = .ellipse }
+                ToolbarIconButton(symbol: "scribble", selected: tool == .pen) { tool = .pen }
+            }
+            separator
+            HStack(spacing: 6) {
+                ForEach(Array(RGBA.palette.enumerated()), id: \.offset) { _, swatch in
+                    colorSwatch(swatch)
+                }
+            }
+            separator
+            HStack(spacing: 6) {
+                ForEach(AnnotationWidth.allCases, id: \.pt) { w in
+                    widthButton(w)
+                }
+            }
+            separator
+            ToolbarIconButton(symbol: "arrow.uturn.backward", selected: false, action: onUndo)
+                .opacity(canUndo ? 1 : 0.4)
+                .disabled(!canUndo)
+        }
+        .frame(height: 24)
+    }
+
+    /// 分隔线 1×16 半透明
+    private var separator: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.25))
+            .frame(width: 1, height: 16)
+    }
+
+    /// 色板圆点（14pt）：白/黑加 1pt separator 描边保可见；当前色外套 2pt accent ring（内缘贴圆点边缘）
+    private func colorSwatch(_ c: RGBA) -> some View {
+        Button {
+            color = c
+        } label: {
+            Circle()
+                .fill(Color(red: c.r, green: c.g, blue: c.b, opacity: c.a))
+                .frame(width: 14, height: 14)
+                .overlay {
+                    if c == .black || c == .white {
+                        Circle().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+                    }
+                }
+                .overlay {
+                    if c == color {
+                        Circle().strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
+                            .frame(width: 18, height: 18)
+                    }
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 粗细钮（垂直居中实心圆点，直径 = dotDiameter）：当前档外套 2pt accent ring
+    private func widthButton(_ w: AnnotationWidth) -> some View {
+        Button {
+            lineWidth = w
+        } label: {
+            Circle()
+                .fill(Color.primary)
+                .frame(width: w.dotDiameter, height: w.dotDiameter)
+                .frame(width: 18, height: 24)   // 扩大命中区到行高，圆点保持垂直居中
+                .overlay {
+                    if w == lineWidth {
+                        Circle().strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
+                            .frame(width: w.dotDiameter + 4, height: w.dotDiameter + 4)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
