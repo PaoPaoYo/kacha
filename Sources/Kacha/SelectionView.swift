@@ -44,8 +44,12 @@ struct SelectionView: View {
     @State private var activeTool: AnnotationTool = .select
     /// 当前标注颜色（色板 8 色之一）
     @State private var annotationColor: RGBA = .red
-    /// 当前标注粗细（三档）
+    /// 当前标注粗细（三档；blur 工具不用此值，见 blurPenWidth）
     @State private var annotationWidth: AnnotationWidth = .medium
+    /// 模糊工具半径（pt，4...20）：固化进每笔标注（撤销后不受后续调节影响）；@AppStorage 跨会话记忆
+    @AppStorage("blurRadius") private var blurRadius: Double = 8
+    /// 模糊工具笔宽（pt，8...80）：打码范围大，独立于三档 annotationWidth；@AppStorage 跨会话记忆
+    @AppStorage("blurPenWidth") private var blurPenWidth: Double = 24
     /// 进行中的一笔标注（绘制手势期间持有；松开时 isValid 才入栈，随后清空）
     @State private var drawingAnnotation: Annotation?
     /// 模糊预览图缓存（单条目，见 blurPreviewImage）
@@ -97,10 +101,10 @@ struct SelectionView: View {
                             // path 产出选区局部坐标（原点 = 视图原点），Canvas 原点 = sel.minX：平移对齐
                             ctx.translateBy(x: -sel.minX, y: -sel.minY)
                             let path = Path(AnnotationGeometry.path(for: a.kind, in: sel, lineWidth: a.lineWidth))
-                            if case .blur = a.kind {
-                                // 高斯模糊：涂抹路径展宽为 clip，冻结帧按选区裁剪、CIGaussianBlur（8pt × 像素比）
+                            if case let .blur(_, radius) = a.kind {
+                                // 高斯模糊：涂抹路径展宽为 clip，冻结帧按选区裁剪、CIGaussianBlur（每笔 radius × 像素比）
                                 // 后 1:1 绘制（与 AnnotationRenderer 输出同构；颜色不参与渲染，坐标为视图坐标 → 画到 sel）
-                                if let blurred = blurPreviewImage(in: sel) {
+                                if let blurred = blurPreviewImage(in: sel, radius: radius) {
                                     ctx.clip(to: path.strokedPath(StrokeStyle(lineWidth: a.lineWidth,
                                                                               lineCap: .round, lineJoin: .round)))
                                     ctx.draw(Image(decorative: blurred, scale: 1), in: sel)
@@ -201,6 +205,8 @@ struct SelectionView: View {
                                        color: $annotationColor,
                                        lineWidth: $annotationWidth,
                                        cornerRadius: $cornerRadius,
+                                       blurRadius: $blurRadius,
+                                       blurPenWidth: $blurPenWidth,
                                        showColorPalette: $showColorPalette,
                                        showWidthPicker: $showWidthPicker,
                                        showRadiusSlider: $showRadiusSlider,
@@ -275,6 +281,10 @@ struct SelectionView: View {
                 // 面板展开/收起源同步：任一面板开 → 行矩形向上扩 60pt 光标带，全收起 → .zero
                 cursorState.panelBand = Self.panelBand(sel: selection, bounds: geo.size, anyPanelOpen: open)
             }
+            .onChange(of: blurPenWidth) { _, new in
+                // blur 笔刷光标直径源同步（实时跟随滑块；blurRadius 不影响光标）
+                cursorState.blurWidth = CGFloat(new)
+            }
             .onChange(of: activeTool) { _, new in
                 // 光标快照同步（引用实例，monitor 每次读到最新值）：绘制工具激活 → 选区内统一十字
                 cursorState.tool = new
@@ -293,6 +303,7 @@ struct SelectionView: View {
                 cursorState.selection = selection
                 cursorState.hasSelection = SelectionGeometry.isValid(selection)
                 cursorState.tool = activeTool
+                cursorState.blurWidth = CGFloat(blurPenWidth)
                 cursorMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { event in
                     Self.applyCursor(event: event, state: cursorState, screen: frame.screen)
                     return event
@@ -417,15 +428,19 @@ struct SelectionView: View {
                 }
             }
         case .blur:
-            // 同 pen：采样归一化追加（去重 1pt）；颜色照存但不参与模糊渲染
+            // 同 pen：采样归一化追加（去重 1pt）；颜色照存但不参与模糊渲染。
+            // 半径/笔宽在下笔瞬间取自 @AppStorage 并固化进本笔（绘制中滑块不可达，值恒定；
+            // 追加时沿用 stroke 起笔固化的 radius，不回读 AppStorage）
             let p = AnnotationGeometry.normalizedPoint(point, in: sel)
             if drawingAnnotation == nil {
-                drawingAnnotation = Annotation(kind: .blur(points: [AnnotationGeometry.normalizedPoint(start, in: sel)]),
-                                               color: color, lineWidth: width)
-            } else if var drawing = drawingAnnotation, case let .blur(points) = drawing.kind {
+                drawingAnnotation = Annotation(
+                    kind: .blur(points: [AnnotationGeometry.normalizedPoint(start, in: sel)],
+                                radius: CGFloat(blurRadius)),
+                    color: color, lineWidth: CGFloat(blurPenWidth))
+            } else if var drawing = drawingAnnotation, case let .blur(points, radius) = drawing.kind {
                 let lastLocal = points.last.map { AnnotationGeometry.localPoint($0, in: sel) }
                 if AnnotationGeometry.shouldAppendPenPoint(point, after: lastLocal) {
-                    drawing.kind = .blur(points: points + [p])
+                    drawing.kind = .blur(points: points + [p], radius: radius)
                     drawingAnnotation = drawing
                 }
             }
@@ -440,20 +455,21 @@ struct SelectionView: View {
         drawingAnnotation = nil
     }
 
-    /// 模糊预览图（带单条目缓存）：依赖只有冻结帧与选区，涂抹拖动期间选区不变，同选区复用
+    /// 模糊预览图（带单条目缓存）：依赖只有冻结帧、选区与半径，涂抹拖动期间三者不变，同键复用
     /// （引用类型缓存：@State 持有不触发视图刷新，Canvas 绘制期只读）
-    private func blurPreviewImage(in sel: CGRect) -> CGImage? {
-        if blurPreview.sel == sel, let cached = blurPreview.image { return cached }
-        let image = Self.makeBlurPreview(base: frame.image, pointSize: frame.screenPointSize, sel: sel)
+    private func blurPreviewImage(in sel: CGRect, radius: CGFloat) -> CGImage? {
+        if blurPreview.sel == sel, blurPreview.radius == radius, let cached = blurPreview.image { return cached }
+        let image = Self.makeBlurPreview(base: frame.image, pointSize: frame.screenPointSize, sel: sel, radius: radius)
         blurPreview.sel = sel
+        blurPreview.radius = radius
         blurPreview.image = image
         return image
     }
 
     /// 预览与 AnnotationRenderer 输出同构：冻结帧按选区像素裁剪（CGImage 图像坐标，左上原点）→
-    /// CIGaussianBlur（半径 8pt × 像素/点），输出保持裁剪原分辨率（1:1 绘制无插值问题）。
+    /// CIGaussianBlur（每笔 radius pt × 像素/点），输出保持裁剪原分辨率（1:1 绘制无插值问题）。
     /// nil = 裁剪/模糊失败（该笔预览跳过，输出层 AnnotationRenderer 仍正常）
-    private static func makeBlurPreview(base: CGImage, pointSize: CGSize, sel: CGRect) -> CGImage? {
+    private static func makeBlurPreview(base: CGImage, pointSize: CGSize, sel: CGRect, radius: CGFloat) -> CGImage? {
         let pixelScale = CGFloat(base.width) / max(pointSize.width, 1)
         guard pixelScale > 0 else { return nil }
         let imageBounds = CGRect(x: 0, y: 0, width: base.width, height: base.height)
@@ -465,7 +481,7 @@ struct SelectionView: View {
         let clamped = ciImage.clampedToExtent()
         guard let filter = CIFilter(name: "CIGaussianBlur") else { return nil }
         filter.setValue(clamped, forKey: kCIInputImageKey)
-        filter.setValue(8.0 * pixelScale, forKey: kCIInputRadiusKey)
+        filter.setValue(radius * pixelScale, forKey: kCIInputRadiusKey)
         let blurred = (filter.outputImage ?? clamped).cropped(to: ciImage.extent)
         return AnnotationRenderer.sharedCIContext.createCGImage(blurred, from: ciImage.extent)
     }
@@ -590,9 +606,12 @@ struct SelectionView: View {
             (vertical ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).set()
             return
         }
-        // c. 选区内 → 绘制工具十字；选择工具拖动中合掌 / 悬停开掌
+        // c. 选区内 → 绘制工具：blur = 空心圆笔刷光标（直径实时跟随滑块）/ 其他 = 十字；
+        //    选择工具拖动中合掌 / 悬停开掌
         if state.selection.contains(p) {
-            if state.tool.takesOverDrag {
+            if state.tool == .blur {
+                ringCursor(diameter: state.blurWidth).set()
+            } else if state.tool.takesOverDrag {
                 NSCursor.crosshair.set()
             } else if event.type == .leftMouseDragged {
                 NSCursor.closedHand.set()
@@ -604,12 +623,53 @@ struct SelectionView: View {
         // d. 其余（遮罩区域、工具栏、二级面板）→ 默认箭头（macOS 惯例：按钮 hover 也是箭头）
         NSCursor.arrow.set()
     }
+
+    /// blur 笔刷光标缓存：按直径（blurPenWidth step 2，条目有限）；MainActor 隔离满足 Swift 6
+    @MainActor
+    private static var ringCursorCache: [CGFloat: NSCursor] = [:]
+
+    /// 空心圆笔刷光标（blur 工具选区内）：CGContext 画双层圆环——外 1.5pt 黑 + 内 1pt 白
+    /// （任意背景可见），中心透明，hotSpot = 圆心。直径 clamp 到 8...128（NSCursor 图像过大
+    /// 系统拒绝/裁剪）；2× 位图保 retina 锐利；按直径缓存；任一步失败回退 crosshair
+    @MainActor
+    private static func ringCursor(diameter: CGFloat) -> NSCursor {
+        let d = min(max(diameter, 8), 128)
+        if let cached = ringCursorCache[d] { return cached }
+        let pointSize = d + 4                      // 环外缘 R + 0.75pt，余 4pt 容 AA
+        let pixel = Int(pointSize * 2)
+        guard pixel > 0,
+              let ctx = CGContext(data: nil, width: pixel, height: pixel,
+                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return .crosshair }
+        ctx.scaleBy(x: 2, y: 2)                    // 2× 位图，NSImage 尺寸按 point
+        let c = pointSize / 2
+        let r = d / 2
+        // 黑圈覆盖 R±0.75，白圈内缘 R-1.75…R-0.75 相接成 2.5pt 双层环；中心不填充保持透明
+        let rings: [(CGFloat, CGColor, CGFloat)] = [
+            (r, CGColor(red: 0, green: 0, blue: 0, alpha: 1), 1.5),
+            (r - 1.25, CGColor(red: 1, green: 1, blue: 1, alpha: 1), 1.0),
+        ]
+        for (ringR, color, w) in rings {
+            ctx.addEllipse(in: CGRect(x: c - ringR, y: c - ringR, width: ringR * 2, height: ringR * 2))
+            ctx.setStrokeColor(color)
+            ctx.setLineWidth(w)
+            ctx.strokePath()
+        }
+        guard let cgImage = ctx.makeImage() else { return .crosshair }
+        let cursor = NSCursor(image: NSImage(cgImage: cgImage, size: NSSize(width: pointSize, height: pointSize)),
+                              hotSpot: NSPoint(x: c, y: c))
+        ringCursorCache[d] = cursor
+        return cursor
+    }
 }
 
 /// 模糊预览图的单条目缓存：引用类型，@State 持有不触发视图刷新
 ///（涂抹拖动期间选区不变，Canvas 每帧重绘直接命中缓存，避免逐帧重复 CI 模糊）
 private final class BlurPreviewCache {
     var sel: CGRect = .zero
+    var radius: CGFloat = 0
     var image: CGImage?
 }
 
@@ -622,6 +682,8 @@ private final class CursorState {
     var tool: AnnotationTool = .select
     /// 面板展开期间的光标带（主行矩形向上扩 60pt，见 panelBand）；全收起时 .zero
     var panelBand: CGRect = .zero
+    /// blur 工具笔刷光标直径（= blurPenWidth，实时跟随滑块）
+    var blurWidth: CGFloat = 0
 }
 
 /// 调整态可拖拽的部位：8 个手柄 + 选区内部（整体移动）
@@ -702,6 +764,9 @@ private struct CaptureToolbar: View {
     @Binding var color: RGBA
     @Binding var lineWidth: AnnotationWidth
     @Binding var cornerRadius: Double
+    /// 模糊工具专属双滑块值（半径 4...20 / 笔宽 8...80），仅 blur 面板消费
+    @Binding var blurRadius: Double
+    @Binding var blurPenWidth: Double
     @Binding var showColorPalette: Bool
     @Binding var showWidthPicker: Bool
     @Binding var showRadiusSlider: Bool
@@ -714,6 +779,8 @@ private struct CaptureToolbar: View {
     /// 面板锚定偏移（overlay alignment .bottom 上再 offset）：钮半高 12 ＋ 面板半高 12 ＋ 间隙 4
     /// → 面板底缘贴钮顶上方 4pt
     private let panelAnchorOffset: CGFloat = -(12 + 24 / 2 + 4)
+    /// 模糊双滑块面板锚定偏移：面板高自适应 ~48（半高 24），同式保持 4pt 间隙
+    private let blurPanelAnchorOffset: CGFloat = -(12 + 48 / 2 + 4)
 
     var body: some View {
         mainRow
@@ -734,7 +801,11 @@ private struct CaptureToolbar: View {
                 ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") { tool = .blur }
             }
             separator
-            currentColorButton
+            // blur 工具无颜色语义（颜色照存但不参与模糊渲染）：隐藏色板整钮，HStack 自适应收窄
+            // （行宽常量 396 保守不变，仅作面板光标带基底与左缘 clamp，偏宽无害）
+            if tool != .blur {
+                currentColorButton
+            }
             currentWidthButton
             radiusButton
             separator
@@ -782,7 +853,8 @@ private struct CaptureToolbar: View {
         }
     }
 
-    /// 当前粗细钮（24×24 玻璃圆钮内嵌 dotDiameter 实心圆点）：点击展开/收起粗细面板（浮于钮正上方）
+    /// 当前粗细钮（24×24 玻璃圆钮内嵌 dotDiameter 实心圆点）：点击展开/收起粗细面板（浮于钮正上方）。
+    /// 面板内容按工具分支：普通工具 = 三档圆点；blur 工具 = 半径/笔宽双滑块（两行，~48 高）
     private var currentWidthButton: some View {
         Button {
             togglePanel { showWidthPicker.toggle() }
@@ -797,16 +869,47 @@ private struct CaptureToolbar: View {
         .glassEffect(in: Circle())
         .overlay(alignment: .bottom) {
             if showWidthPicker {
-                panelCapsule {
-                    HStack(spacing: 6) {
-                        ForEach(AnnotationWidth.allCases, id: \.pt) { w in
-                            widthButton(w) { showWidthPicker = false }
+                if tool == .blur {
+                    panelCapsuleAdaptive {
+                        blurSliderPanel
+                    }
+                    .offset(y: blurPanelAnchorOffset)
+                } else {
+                    panelCapsule {
+                        HStack(spacing: 6) {
+                            ForEach(AnnotationWidth.allCases, id: \.pt) { w in
+                                widthButton(w) { showWidthPicker = false }
+                            }
                         }
                     }
+                    .offset(y: panelAnchorOffset)
                 }
-                .offset(y: panelAnchorOffset)
             }
         }
+    }
+
+    /// 模糊工具双滑块面板：上行「半径」4...20（step 1，固化进每笔）、下行「宽度」8...80（step 2）；
+    /// 数值等宽数字不跳动；拖动实时生效（进行中笔画沿用起笔固化值，下一笔生效）
+    private var blurSliderPanel: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Text("半径").font(.system(size: 12, weight: .medium))
+                Slider(value: $blurRadius, in: 4...20, step: 1)
+                    .frame(width: 120)
+                Text("\(Int(blurRadius))")
+                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                    .frame(width: 24)
+            }
+            HStack(spacing: 8) {
+                Text("宽度").font(.system(size: 12, weight: .medium))
+                Slider(value: $blurPenWidth, in: 8...80, step: 2)
+                    .frame(width: 120)
+                Text("\(Int(blurPenWidth))")
+                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                    .frame(width: 24)
+            }
+        }
+        .foregroundStyle(.primary)
     }
 
     /// 圆角钮（玻璃胶囊：rectangle.roundedtop 圆角矩形符号（比 ruler 更直观，probe 实证存在）
@@ -859,6 +962,14 @@ private struct CaptureToolbar: View {
         content()
             .padding(.horizontal, 10)
             .frame(height: 24)
+            .glassEffect(in: Capsule())
+    }
+
+    /// 面板容器（高度自适应变体）：玻璃胶囊（水平 10 / 垂直 6 内边距），blur 双滑块面板 ~48 高
+    private func panelCapsuleAdaptive<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
             .glassEffect(in: Capsule())
     }
 

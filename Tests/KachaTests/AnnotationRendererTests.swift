@@ -56,7 +56,7 @@ final class AnnotationRendererTests: XCTestCase {
         ctx.fill(CGRect(x: 0, y: 0, width: 100, height: 60))
         let base = ctx.makeImage()!
         // 横向涂抹 point y=10（距黑块边缘 30px，远超 15pt 模糊半径的影响）；红色不参与模糊渲染
-        let a = Annotation(kind: .blur(points: [CGPoint(x: 0.2, y: 0.1), CGPoint(x: 0.8, y: 0.1)]),
+        let a = Annotation(kind: .blur(points: [CGPoint(x: 0.2, y: 0.1), CGPoint(x: 0.8, y: 0.1)], radius: 8),
                            color: .red, lineWidth: 4)
         let out = AnnotationRenderer.composite(base, annotations: [a], selectionPointWidth: 100)
         // 涂抹区内：黑块模糊后仍近黑（实测 ~43/通道：CIGaussianBlur 有效扩散约为半径 2 倍）；
