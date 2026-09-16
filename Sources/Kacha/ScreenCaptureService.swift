@@ -44,25 +44,10 @@ final class ScreenCaptureService {
 
         var frames: [ScreenFrame] = []
         for screen in NSScreen.screens {
-            // macOS 27 SDK：NSScreen 无 displayID 属性，经 deviceDescription 取 CGDirectDisplayID
-            guard let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
-                  let display = content.displays.first(where: { $0.displayID == displayID }) else {
-                continue
-            }
-            let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-            let config = SCStreamConfiguration()
-            config.showsCursor = false
-            // 不设 captureResolution：该 API 在 SCScreenshotManager 路径行为不可靠（实测与 width/height 相互覆盖）。
-            // 物理像素实测：CGDisplayPixelsWide 在 HiDPI 返回逻辑值(1512)、SCDisplay.width 头文件标注 points，
-            // 唯一可靠来源是 NSScreen point 尺寸 × backingScaleFactor（本机实测 1512×982×2.0=3024×1964）
-            config.width = Int(screen.frame.width * screen.backingScaleFactor)
-            config.height = Int(screen.frame.height * screen.backingScaleFactor)
-            do {
-                let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-                frames.append(ScreenFrame(screen: screen, image: image))
-            } catch {
-                throw CaptureError.captureFailed(underlying: error)
-            }
+            // 抓帧引擎：/usr/sbin/screencapture 走 WindowServer 管线，保留窗口阴影；
+            // SCScreenshotManager（SCK 合成管线）不渲染阴影，故弃用
+            let image = try await captureDisplayImage(displayID: screen.displayID)
+            frames.append(ScreenFrame(screen: screen, image: image))
         }
         // 窗口枚举（与冻结帧同刻）：普通窗口、在屏、有主 app、非本 app、frame 有效
         let totalHeight = NSScreen.screens.map { $0.frame.maxY }.max() ?? 0
@@ -93,6 +78,31 @@ final class ScreenCaptureService {
             }
         }
         return CaptureSession(frames: frames, windowsByScreen: windowsByScreen)
+    }
+
+    /// 用 /usr/sbin/screencapture 抓单屏当前帧（WindowServer 管线，保留窗口阴影），落盘 PNG 后读回 CGImage
+    private func captureDisplayImage(displayID: CGDirectDisplayID) async throws -> CGImage {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kacha-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        // 进程运行放后台线程，避免 waitUntilExit 卡 MainActor
+        let status = try await Task.detached(priority: .userInitiated) {
+            () -> Int32 in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            proc.arguments = ["-x", "-D", String(displayID), "-t", "png", url.path]
+            try proc.run()
+            proc.waitUntilExit()
+            return proc.terminationStatus
+        }.value
+        guard status == 0, let provider = CGDataProvider(url: url as CFURL) else {
+            throw CaptureError.captureFailed(underlying: NSError(domain: "kacha.screencapture", code: Int(status)))
+        }
+        guard let image = CGImage(pngDataProviderSource: provider, decode: nil,
+                                  shouldInterpolate: true, intent: .defaultIntent) else {
+            throw CaptureError.captureFailed(underlying: NSError(domain: "kacha.screencapture", code: -1))
+        }
+        return image
     }
 }
 
