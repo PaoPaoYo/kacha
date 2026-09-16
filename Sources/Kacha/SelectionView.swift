@@ -180,7 +180,7 @@ struct SelectionView: View {
                         // 选区右下角单行工具栏（紧贴选区）：
                         // [选择|箭头|矩形|椭圆|画笔] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]；
                         // 色板/粗细/圆角面板为触发钮 overlay（浮于钮正上方、可盖选区、不占布局）。
-                        // 整组布局（右缘锚点 / 底缘 / clamp / 光标命中区）见 toolbarRowLayout 单一公式源；
+                        // 整组布局（右缘锚点 / 底缘 / clamp / 面板光标带基底）见 toolbarRowLayout 单一公式源；
                         // 行内控件均为点击（无拖动手势），调整态父层手势已禁用，不会把操作漏进选区拖动
                         let group = Self.toolbarRowLayout(sel: sel, bounds: geo.size)
                         CaptureToolbar(tool: $activeTool,
@@ -251,8 +251,15 @@ struct SelectionView: View {
             .onChange(of: selection) { _, new in
                 cursorState.selection = new
                 cursorState.hasSelection = SelectionGeometry.isValid(new)
-                // 工具栏（单行）命中区与渲染 offset 用同一公式（toolbarRowLayout）；非调整态置空
-                cursorState.toolbarZone = phase == .adjusting ? Self.toolbarRowLayout(sel: new, bounds: geo.size).zone : .zero
+                // 面板展开光标带与渲染 offset 用同一公式（toolbarRowLayout 行矩形）；
+                // 选区源同步（面板全收起时为 .zero）
+                cursorState.panelBand = Self.panelBand(
+                    sel: new, bounds: geo.size,
+                    anyPanelOpen: showColorPalette || showWidthPicker || showRadiusSlider)
+            }
+            .onChange(of: showColorPalette || showWidthPicker || showRadiusSlider) { _, open in
+                // 面板展开/收起源同步：任一面板开 → 行矩形向上扩 60pt 光标带，全收起 → .zero
+                cursorState.panelBand = Self.panelBand(sel: selection, bounds: geo.size, anyPanelOpen: open)
             }
             .onChange(of: activeTool) { _, new in
                 // 光标快照同步（引用实例，monitor 每次读到最新值）：绘制工具激活 → 选区内统一十字
@@ -468,15 +475,15 @@ struct SelectionView: View {
     }
 
     /// 单行工具栏（主行 24pt；色板/粗细/圆角面板为触发钮 overlay，不占布局）布局单一公式源
-    /// （渲染 offset / 光标命中区共用）：组右缘锚定选区白边右缘（sel.maxX，与边框对齐）；
+    /// （渲染 offset / 面板光标带基底共用）：组右缘锚定选区白边右缘（sel.maxX，与边框对齐）；
     /// 左缘出屏时整组右移（rowWidth 取主行估算宽 + 容差，右缘允许越过锚点）；
     /// 锚点 = 主行底缘 bottom，整组紧贴选区：下方放得下（组顶贴 sel.maxY + 4、组底再留 8pt 屏底余量）
     /// 时组底缘 sel.maxY + 28（主行中心 sel.maxY + 16），否则收进选区内侧组底缘 sel.maxY - 4
     /// （主行中心 sel.maxY - 16，上下对称留 4pt）。
-    static func toolbarRowLayout(sel: CGRect, bounds: CGSize) -> (right: CGFloat, bottom: CGFloat, zone: CGRect) {
+    static func toolbarRowLayout(sel: CGRect, bounds: CGSize) -> (right: CGFloat, bottom: CGFloat, row: CGRect) {
         // 主行实际宽 ≈387（工具 5×24 + 4×6 ＋ 分隔 1 ＋ 色钮 24 ＋ 粗细钮 24 ＋ 圆角钮 48 ＋ 分隔 1
-        // ＋ 撤销 24 ＋ 分隔 1 ＋ 保存钮 24 ＋ 复制钮 24 ＋ 9×8 段间距），命中区左缘含约 9pt 容差 → 396，
-        // 仅用于光标命中区与左缘 clamp；实际渲染用右缘 pin + offset，不依赖该估算。
+        // ＋ 撤销 24 ＋ 分隔 1 ＋ 保存钮 24 ＋ 复制钮 24 ＋ 9×8 段间距），左缘含约 9pt 容差 → 396，
+        // 仅用于面板光标带基底与左缘 clamp；实际渲染用右缘 pin + offset，不依赖该估算。
         let rowWidth: CGFloat = 396
         let rowHeight: CGFloat = 24
         var right = sel.maxX
@@ -486,10 +493,17 @@ struct SelectionView: View {
         // 紧贴选区（组顶 sel.maxY + 4）：下方需组顶间距 4 + 主行 24 + 屏底余量 8
         let belowFits = sel.maxY + 4 + rowHeight + 8 <= bounds.height
         let bottom = belowFits ? sel.maxY + 4 + rowHeight : sel.maxY - 4
-        // 光标命中区 = 主行矩形 + 上下各 6pt 容差（与 V2 单行 ±6 一致；面板为 overlay 不占 zone）
-        let zone = CGRect(x: right - rowWidth, y: bottom - rowHeight - 6,
-                          width: rowWidth, height: rowHeight + 12)
-        return (right, bottom, zone)
+        // 主行矩形（面板展开期间光标带的基底，见 panelBand）
+        let row = CGRect(x: right - rowWidth, y: bottom - rowHeight,
+                         width: rowWidth, height: rowHeight)
+        return (right, bottom, row)
+    }
+
+    /// 面板展开期间的光标带：主行矩形向上扩 60pt（面板 overlay 向上生长、几何上常盖住选区，
+    /// 带内一律箭头，不透出选区光标）。无有效选区或面板全收起时为 .zero（不拦光标）。
+    static func panelBand(sel: CGRect?, bounds: CGSize, anyPanelOpen: Bool) -> CGRect {
+        guard anyPanelOpen, let sel, SelectionGeometry.isValid(sel) else { return .zero }
+        return toolbarRowLayout(sel: sel, bounds: bounds).row.insetBy(dx: 0, dy: -60)
     }
 
     /// 单一光标决策点：mouseMoved / leftMouseDragged 统一在此判定（cursorRect 已停用）
@@ -504,7 +518,13 @@ struct SelectionView: View {
             NSCursor.crosshair.set()
             return
         }
-        // b. 命中手柄（几何式）：先四角 ±8 → 对角缩放光标，再边线 ±8 → 上下/左右缩放光标
+        // b'. 面板展开期间：主行向上扩 60pt 的带内一律箭头（面板 overlay 常盖住选区，
+        // 不透出角/边/选区光标——用户抱怨的「透到底底」即此）
+        if state.panelBand.contains(p) {
+            NSCursor.arrow.set()
+            return
+        }
+        // b. 命中手柄（几何式）：先四角 ±8 → 对角缩放光标，再边线（内 8 外 3）→ 上下/左右缩放光标
         if let position = cornerPosition(at: p, in: state.selection) {
             NSCursor.frameResize(position: position, directions: .all).set()
             return
@@ -513,28 +533,19 @@ struct SelectionView: View {
             (vertical ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).set()
             return
         }
-        // b'. 悬停工具栏（单行主行 + 弹出面板）→ pointingHand
-        if state.toolbarZone.contains(p) {
-            NSCursor.pointingHand.set()
-            return
-        }
-        // b''. 绘制工具激活：绘制层覆盖整个选区（含边角手柄，move/缩放手势全部让位），
-        // 选区内外统一十字（工具栏命中区已在上方优先处理）
-        if state.tool.takesOverDrag {
-            NSCursor.crosshair.set()
-            return
-        }
-        // c. 选区内 → 拖动中合掌 / 悬停开掌
+        // c. 选区内 → 绘制工具十字；选择工具拖动中合掌 / 悬停开掌
         if state.selection.contains(p) {
-            if event.type == .leftMouseDragged {
+            if state.tool.takesOverDrag {
+                NSCursor.crosshair.set()
+            } else if event.type == .leftMouseDragged {
                 NSCursor.closedHand.set()
             } else {
                 NSCursor.openHand.set()
             }
             return
         }
-        // d. 其他 → 十字
-        NSCursor.crosshair.set()
+        // d. 其余（遮罩区域、工具栏、二级面板）→ 默认箭头（macOS 惯例：按钮 hover 也是箭头）
+        NSCursor.arrow.set()
     }
 }
 
@@ -543,10 +554,10 @@ private final class CursorState {
     var hasSelection = false
     var selection: CGRect = .zero
     var viewHeight: CGFloat = 0
-    /// 当前标注工具：绘制工具激活时选区内（含边角手柄区）统一十字
+    /// 当前标注工具：绘制工具激活时选区内十字
     var tool: AnnotationTool = .select
-    /// 工具栏（单行 + 弹出面板）命中区，toolbarRowLayout 公式回填；悬停 → pointer 光标
-    var toolbarZone: CGRect = .zero
+    /// 面板展开期间的光标带（主行矩形向上扩 60pt，见 panelBand）；全收起时 .zero
+    var panelBand: CGRect = .zero
 }
 
 /// 调整态可拖拽的部位：8 个手柄 + 选区内部（整体移动）
