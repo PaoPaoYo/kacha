@@ -68,7 +68,8 @@ final class ScreenCaptureService {
         let totalHeight = NSScreen.screens.map { $0.frame.maxY }.max() ?? 0
         let myPID = ProcessInfo.processInfo.processIdentifier
         var windowsByScreen: [CGDirectDisplayID: [CGRect]] = [:]
-        for window in content.windows {
+        // SCShareableContent.windows 实测为 back-to-front（后面=更上层），反转为 front-to-back 以符合 hitTest 首个命中=最上层的契约（用户冒烟实证）
+        for window in content.windows.reversed() {
             guard window.windowLayer == 0,
                   window.isOnScreen, // 最小化/其他 Space 的窗口不可见
                   let owner = window.owningApplication,
