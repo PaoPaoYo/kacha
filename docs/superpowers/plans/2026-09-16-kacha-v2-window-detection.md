@@ -427,3 +427,26 @@ private func roundedCornerImage(_ image: CGImage, pixelRadius: CGFloat) -> CGIma
 - [ ] Step 2: `swift build && swift test`（30/30 仍过）→ `make app`
 - [ ] Step 3: 用户 GUI 冒烟（滑动条显示/拖动流畅/白边预览/输出圆角 PNG 透明角/复制保存都圆角/滑条不干扰手势）
 - [ ] Step 4: Commit（信息见上）
+
+---
+
+### Task 6: 抓帧引擎换 screencapture CLI（保留窗口阴影）（2026-09-16 用户迭代需求）
+
+**Files:**
+- Modify: `Sources/Kacha/ScreenCaptureService.swift`
+
+**Interfaces:**
+- Consumes: `CaptureSession` 结构、窗口枚举（不变）、NSScreen.displayID
+- Produces: `captureSession()` 签名不变；内部抓帧从 SCScreenshotManager 换为 `/usr/sbin/screencapture -x -D <displayID> -t png <tmp>` → CGImage
+
+**规格：**
+- 逐屏：`screencapture -x -D <displayID> -t png <临时文件>`（-x 静音；-D 接 CGDirectDisplayID；默认物理像素分辨率、不含鼠标指针）→ `CGImage(pngDataProviderSource:)` 读入 → 删除临时文件
+- 进程等待放后台（`Task.detached` 或 async let），不卡 MainActor
+- 失败（非零退出/读图失败）→ `CaptureError.captureFailed`
+- 窗口枚举（SCShareableContent）与全部下游链路（坐标/裁剪/圆角/复制/保存）不动
+- 提交信息：`feat: 抓帧引擎换 screencapture，保留窗口阴影`，末尾 Co-Authored-By: Claude Code <noreply@anthropic.com>
+
+- [ ] Step 1: 实现（保留 SCScreenshotManager 旧路径代码可删除，git 可 revert）
+- [ ] Step 2: `swift build && swift test`（30/30）→ `make install`
+- [ ] Step 3: 用户冒烟（冻结画面有阴影/延迟可接受/裁剪圆角复制保存无回归/分辨率清晰度不降）
+- [ ] Step 4: Commit
