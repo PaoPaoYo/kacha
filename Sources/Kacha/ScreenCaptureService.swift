@@ -10,6 +10,12 @@ struct ScreenFrame {
     var imagePixelSize: CGSize { CGSize(width: image.width, height: image.height) }
 }
 
+/// 一次截图会话的完整数据：各屏冻结帧 + 各屏窗口矩形（本屏局部坐标、front-to-back）
+struct CaptureSession {
+    let frames: [ScreenFrame]
+    let windowsByScreen: [CGDirectDisplayID: [CGRect]]
+}
+
 enum CaptureError: LocalizedError {
     case noPermission
     case captureFailed(underlying: Error)
@@ -24,9 +30,9 @@ enum CaptureError: LocalizedError {
 
 @MainActor
 final class ScreenCaptureService {
-    /// 逐屏抓取当前帧（一次性抓帧，不起持续推流）。
+    /// 逐屏抓取当前帧并枚举窗口（同刻冻结，一次性抓帧，不起持续推流）。
     /// macOS 27 SDK：SCShareableContent.current 为 throws 属性，未授权时抛错。
-    func captureAllDisplays() async throws -> [ScreenFrame] {
+    func captureSession() async throws -> CaptureSession {
         let content: SCShareableContent
         do {
             content = try await SCShareableContent.current
@@ -58,6 +64,31 @@ final class ScreenCaptureService {
                 throw CaptureError.captureFailed(underlying: error)
             }
         }
-        return frames
+        // 窗口枚举（与冻结帧同刻）：普通窗口、有主 app、非本 app、frame 有效
+        let totalHeight = NSScreen.screens.map { $0.frame.maxY }.max() ?? 0
+        let myPID = ProcessInfo.processInfo.processIdentifier
+        var windowsByScreen: [CGDirectDisplayID: [CGRect]] = [:]
+        for window in content.windows {
+            guard window.windowLayer == 0,
+                  let owner = window.owningApplication,
+                  owner.processID != myPID,
+                  window.frame.width > 0, window.frame.height > 0
+            else { continue }
+            for screen in NSScreen.screens {
+                let local = WindowGeometry.localRect(window: window.frame, screenFrame: screen.frame, totalHeight: totalHeight)
+                let screenBounds = CGRect(origin: .zero, size: screen.frame.size)
+                if let clamped = WindowGeometry.clampedToScreen(local, screenBounds: screenBounds) {
+                    windowsByScreen[screen.displayID, default: []].append(clamped)
+                }
+            }
+        }
+        return CaptureSession(frames: frames, windowsByScreen: windowsByScreen)
+    }
+}
+
+/// macOS 27 SDK：NSScreen 无 displayID 属性，经 deviceDescription 取 CGDirectDisplayID
+private extension NSScreen {
+    var displayID: CGDirectDisplayID {
+        (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) ?? 0
     }
 }

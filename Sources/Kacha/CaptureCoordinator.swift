@@ -16,8 +16,8 @@ final class CaptureCoordinator {
         defer { isRunning = false }
 
         do {
-            let frames = try await captureService.captureAllDisplays()
-            overlay.show(frames: frames, onCapture: { image, action in
+            let session = try await captureService.captureSession()
+            overlay.show(frames: session.frames, windowsByScreen: session.windowsByScreen, onCapture: { image, action in
                 switch action {
                 case .copy:
                     ClipboardService.write(image)

@@ -16,8 +16,9 @@ extension Notification.Name {
 final class OverlayController {
     private var panels: [KeyablePanel] = []
 
-    /// 显示全部屏幕的覆盖窗；用户完成框选后回调裁剪好的图像与所选动作
-    func show(frames: [ScreenFrame], onCapture: @escaping (CGImage, CaptureAction) -> Void, onCancel: @escaping () -> Void) {
+    /// 显示全部屏幕的覆盖窗；用户完成框选后回调裁剪好的图像与所选动作。
+    /// windowsByScreen：各屏窗口矩形（本屏局部坐标、front-to-back），透传给各屏 SelectionView
+    func show(frames: [ScreenFrame], windowsByScreen: [CGDirectDisplayID: [CGRect]], onCapture: @escaping (CGImage, CaptureAction) -> Void, onCancel: @escaping () -> Void) {
         dismissAll()
         NSApp.activate(ignoringOtherApps: true)
 
@@ -34,7 +35,8 @@ final class OverlayController {
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             panel.hidesOnDeactivate = false
 
-            let view = SelectionView(frame: frame) { [weak self] pointRect in
+            let displayID = frame.screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? 0
+            let view = SelectionView(frame: frame, windows: windowsByScreen[displayID] ?? []) { [weak self] pointRect in
                 self?.handleConfirm(frame: frame, pointRect: pointRect, action: .copy, onCapture: onCapture)
             } onSave: { [weak self] pointRect in
                 self?.handleConfirm(frame: frame, pointRect: pointRect, action: .save, onCapture: onCapture)

@@ -5,6 +5,8 @@ import SwiftUI
 /// → 双击/回车/按钮确认，ESC 取消。
 struct SelectionView: View {
     let frame: ScreenFrame
+    /// 本屏窗口矩形（局部坐标、front-to-back）；Task 3 接入悬停命中
+    let windows: [CGRect]
     /// 确认（复制）时回调：屏幕局部 point 选区（有效性已过滤）
     let onConfirm: (CGRect) -> Void
     /// 保存时回调：屏幕局部 point 选区（有效性已过滤）
