@@ -29,7 +29,7 @@ enum AnnotationRenderer {
         ctx.setLineJoin(.round)
         for a in annotations {
             let path = AnnotationGeometry.path(for: a.kind, in: selection, lineWidth: a.lineWidth)
-            // 高斯模糊：不走 stroke——路径按 lineWidth 展宽为区域，区域内底图 CIGaussianBlur（15pt 半径）
+            // 高斯模糊：不走 stroke——路径按 lineWidth 展宽为区域，区域内底图 CIGaussianBlur（8pt 半径）
             if case .blur = a.kind {
                 // 模糊生成失败也不回退成彩色描边（blur 不应有颜色语义）
                 if let blurred = gaussianBlurred(image, scale: scale) {
@@ -64,13 +64,13 @@ enum AnnotationRenderer {
         return ctx.makeImage() ?? image
     }
 
-    /// 底图 CI 高斯模糊：半径 15pt × scale（像素）；clampedToExtent 防边缘发白/收缩，裁回原 extent
+    /// 底图 CI 高斯模糊：半径 8pt × scale（像素）；clampedToExtent 防边缘发白/收缩，裁回原 extent
     static func gaussianBlurred(_ image: CGImage, scale: CGFloat) -> CGImage? {
         let ciImage = CIImage(cgImage: image)
         let clamped = ciImage.clampedToExtent()
         guard let filter = CIFilter(name: "CIGaussianBlur") else { return nil }
         filter.setValue(clamped, forKey: kCIInputImageKey)
-        filter.setValue(15.0 * scale, forKey: kCIInputRadiusKey)
+        filter.setValue(8.0 * scale, forKey: kCIInputRadiusKey)
         let blurred = (filter.outputImage ?? clamped).cropped(to: ciImage.extent)
         return sharedCIContext.createCGImage(blurred, from: ciImage.extent)
     }

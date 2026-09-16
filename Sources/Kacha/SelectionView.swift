@@ -98,7 +98,7 @@ struct SelectionView: View {
                             ctx.translateBy(x: -sel.minX, y: -sel.minY)
                             let path = Path(AnnotationGeometry.path(for: a.kind, in: sel, lineWidth: a.lineWidth))
                             if case .blur = a.kind {
-                                // 高斯模糊：涂抹路径展宽为 clip，冻结帧按选区裁剪、CIGaussianBlur（15pt × 像素比）
+                                // 高斯模糊：涂抹路径展宽为 clip，冻结帧按选区裁剪、CIGaussianBlur（8pt × 像素比）
                                 // 后 1:1 绘制（与 AnnotationRenderer 输出同构；颜色不参与渲染，坐标为视图坐标 → 画到 sel）
                                 if let blurred = blurPreviewImage(in: sel) {
                                     ctx.clip(to: path.strokedPath(StrokeStyle(lineWidth: a.lineWidth,
@@ -451,7 +451,7 @@ struct SelectionView: View {
     }
 
     /// 预览与 AnnotationRenderer 输出同构：冻结帧按选区像素裁剪（CGImage 图像坐标，左上原点）→
-    /// CIGaussianBlur（半径 15pt × 像素/点），输出保持裁剪原分辨率（1:1 绘制无插值问题）。
+    /// CIGaussianBlur（半径 8pt × 像素/点），输出保持裁剪原分辨率（1:1 绘制无插值问题）。
     /// nil = 裁剪/模糊失败（该笔预览跳过，输出层 AnnotationRenderer 仍正常）
     private static func makeBlurPreview(base: CGImage, pointSize: CGSize, sel: CGRect) -> CGImage? {
         let pixelScale = CGFloat(base.width) / max(pointSize.width, 1)
@@ -465,7 +465,7 @@ struct SelectionView: View {
         let clamped = ciImage.clampedToExtent()
         guard let filter = CIFilter(name: "CIGaussianBlur") else { return nil }
         filter.setValue(clamped, forKey: kCIInputImageKey)
-        filter.setValue(15.0 * pixelScale, forKey: kCIInputRadiusKey)
+        filter.setValue(8.0 * pixelScale, forKey: kCIInputRadiusKey)
         let blurred = (filter.outputImage ?? clamped).cropped(to: ciImage.extent)
         return AnnotationRenderer.sharedCIContext.createCGImage(blurred, from: ciImage.extent)
     }
