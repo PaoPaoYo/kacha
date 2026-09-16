@@ -64,18 +64,26 @@ final class ScreenCaptureService {
                 throw CaptureError.captureFailed(underlying: error)
             }
         }
-        // 窗口枚举（与冻结帧同刻）：普通窗口、有主 app、非本 app、frame 有效
+        // 窗口枚举（与冻结帧同刻）：普通窗口、在屏、有主 app、非本 app、frame 有效
         let totalHeight = NSScreen.screens.map { $0.frame.maxY }.max() ?? 0
         let myPID = ProcessInfo.processInfo.processIdentifier
+        // SCShareableContent.windows 顺序未定义（非 Z 序，实测特定 app 间顺序固定且与层级无关）；
+        // 用 CGWindowList 的 front-to-back 顺序（文档保证）排序
+        let zOrder: [CGWindowID] = {
+            guard let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return [] }
+            return infos.compactMap { $0[kCGWindowNumber as String] as? CGWindowID }
+        }()
+        let zIndex: [CGWindowID: Int] = Dictionary(uniqueKeysWithValues: zOrder.enumerated().map { ($1, $0) })
+        let screenWindows = content.windows.filter { window in
+            window.windowLayer == 0 && window.isOnScreen // 最小化/其他 Space 的窗口不可见
+                && window.owningApplication != nil
+                && window.owningApplication?.processID != myPID
+                && window.frame.width > 0 && window.frame.height > 0
+        }
+        // front-to-back 排序；不在 CGWindowList 中的（理论不出现）置末尾
+        let ordered = screenWindows.sorted { (zIndex[$0.windowID] ?? .max) < (zIndex[$1.windowID] ?? .max) }
         var windowsByScreen: [CGDirectDisplayID: [CGRect]] = [:]
-        // SCShareableContent.windows 实测为 back-to-front（后面=更上层），反转为 front-to-back 以符合 hitTest 首个命中=最上层的契约（用户冒烟实证）
-        for window in content.windows.reversed() {
-            guard window.windowLayer == 0,
-                  window.isOnScreen, // 最小化/其他 Space 的窗口不可见
-                  let owner = window.owningApplication,
-                  owner.processID != myPID,
-                  window.frame.width > 0, window.frame.height > 0
-            else { continue }
+        for window in ordered {
             for screen in NSScreen.screens {
                 let local = WindowGeometry.localRect(window: window.frame, screenFrame: screen.frame, totalHeight: totalHeight)
                 let screenBounds = CGRect(origin: .zero, size: screen.frame.size)
