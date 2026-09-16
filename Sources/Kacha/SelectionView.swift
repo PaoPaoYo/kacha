@@ -32,8 +32,8 @@ struct SelectionView: View {
     @State private var cursorMonitor: Any?
     /// 悬停命中的窗口矩形（仅 idle 态更新；dragging 期间保持旧值供 onEnded 窗口分支读取）
     @State private var hoveredWindow: CGRect? = nil
-    /// 输出圆角半径（point）：底部滑动条实时调整；每次截图会话新建 SelectionView，自动重置为 0
-    @State private var cornerRadius: Double = 0
+    /// 输出圆角半径（point）：底部滑动条实时调整；@AppStorage 持久化到 UserDefaults，跨会话记忆上次值
+    @AppStorage("cornerRadius") private var cornerRadius: Double = 0
 
     var body: some View {
         GeometryReader { geo in
