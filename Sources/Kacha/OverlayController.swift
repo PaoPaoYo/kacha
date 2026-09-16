@@ -36,10 +36,10 @@ final class OverlayController {
             panel.hidesOnDeactivate = false
 
             let displayID = frame.screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? 0
-            let view = SelectionView(frame: frame, windows: windowsByScreen[displayID] ?? []) { [weak self] pointRect, cornerRadius in
-                self?.handleConfirm(frame: frame, pointRect: pointRect, cornerRadius: cornerRadius, action: .copy, onCapture: onCapture)
-            } onSave: { [weak self] pointRect, cornerRadius in
-                self?.handleConfirm(frame: frame, pointRect: pointRect, cornerRadius: cornerRadius, action: .save, onCapture: onCapture)
+            let view = SelectionView(frame: frame, windows: windowsByScreen[displayID] ?? []) { [weak self] pointRect, cornerRadius, annotations in
+                self?.handleConfirm(frame: frame, pointRect: pointRect, cornerRadius: cornerRadius, annotations: annotations, action: .copy, onCapture: onCapture)
+            } onSave: { [weak self] pointRect, cornerRadius, annotations in
+                self?.handleConfirm(frame: frame, pointRect: pointRect, cornerRadius: cornerRadius, annotations: annotations, action: .save, onCapture: onCapture)
             } onCancel: { [weak self] in
                 self?.dismissAll()
                 onCancel()
@@ -70,8 +70,8 @@ final class OverlayController {
         panels.removeAll()
     }
 
-    /// 关闭全部覆盖窗 → 裁剪像素 →（按需）圆角化 → 带动作回调（复制 / 保存共用裁剪链路）
-    private func handleConfirm(frame: ScreenFrame, pointRect: CGRect, cornerRadius: CGFloat, action: CaptureAction, onCapture: @escaping (CGImage, CaptureAction) -> Void) {
+    /// 关闭全部覆盖窗 → 裁剪像素 → 标注合成 →（按需）圆角化 → 带动作回调（复制 / 保存共用裁剪链路）
+    private func handleConfirm(frame: ScreenFrame, pointRect: CGRect, cornerRadius: CGFloat, annotations: [Annotation], action: CaptureAction, onCapture: @escaping (CGImage, CaptureAction) -> Void) {
         dismissAll()
         let pixelRect = SelectionGeometry.pixelRect(
             pointRect: pointRect,
@@ -79,14 +79,17 @@ final class OverlayController {
             imagePixelSize: frame.imagePixelSize
         )
         if let cropped = frame.image.cropping(to: pixelRect) {
+            // 标注先画进直角图（无标注时 renderer 原图直通），圆角化在其上 clip，
+            // 保证「标注 + 圆角」并存时标注与底图一起被圆角裁切（与预览所见一致）
+            let composited = AnnotationRenderer.composite(cropped, annotations: annotations, selectionPointWidth: pointRect.width)
             let output: CGImage
             if cornerRadius > 0 {
                 // point 半径 → 像素半径（各屏 scale = 像素尺寸 / point 尺寸）
                 let scale = frame.imagePixelSize.width / frame.screenPointSize.width
-                output = roundedCornerImage(cropped, pixelRadius: cornerRadius * scale)
+                output = roundedCornerImage(composited, pixelRadius: cornerRadius * scale)
             } else {
                 // r == 0：零成本直通
-                output = cropped
+                output = composited
             }
             onCapture(output, action)
         } else {

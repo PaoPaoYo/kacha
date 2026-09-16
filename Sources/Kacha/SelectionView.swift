@@ -9,10 +9,10 @@ struct SelectionView: View {
     let frame: ScreenFrame
     /// 本屏窗口矩形（局部坐标、front-to-back）；悬停高亮与点击选中用
     let windows: [CGRect]
-    /// 确认（复制）时回调：屏幕局部 point 选区（有效性已过滤）+ 圆角半径（point，0 = 直角）
-    let onConfirm: (CGRect, CGFloat) -> Void
-    /// 保存时回调：屏幕局部 point 选区（有效性已过滤）+ 圆角半径（point，0 = 直角）
-    let onSave: (CGRect, CGFloat) -> Void
+    /// 确认（复制）时回调：屏幕局部 point 选区（有效性已过滤）+ 圆角半径（point，0 = 直角）+ 已完成标注
+    let onConfirm: (CGRect, CGFloat, [Annotation]) -> Void
+    /// 保存时回调：屏幕局部 point 选区（有效性已过滤）+ 圆角半径（point，0 = 直角）+ 已完成标注
+    let onSave: (CGRect, CGFloat, [Annotation]) -> Void
     let onCancel: () -> Void
 
     private enum Phase {
@@ -331,12 +331,12 @@ struct SelectionView: View {
 
     private func confirm() {
         guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection) else { return }
-        onConfirm(selection, CGFloat(cornerRadius))
+        onConfirm(selection, CGFloat(cornerRadius), annotations)
     }
 
     private func save() {
         guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection) else { return }
-        onSave(selection, CGFloat(cornerRadius))
+        onSave(selection, CGFloat(cornerRadius), annotations)
     }
 
     /// 撤销最后一笔标注（工具行撤销钮）：空栈无操作（钮同时 40% 透明禁用）
