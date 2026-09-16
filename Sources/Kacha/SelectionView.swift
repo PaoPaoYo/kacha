@@ -3,7 +3,8 @@ import SwiftUI
 /// 单屏框选视图：冻结帧 + 35% 黑遮罩挖洞 + 1pt 白边 + 液态玻璃尺寸胶囊。
 /// 两段式交互：拖拽框选（或 idle 态点击窗口，蓝描边悬停高亮）→ 松开进入调整态
 /// （角/边缩放、内部平移）→ 双击/回车/按钮确认，ESC 取消。
-/// 调整态右下角两行工具栏组（V3：标注工具行 + 输出行；标注绘制手势由 Task 4 接入）。
+/// 调整态右下角两行工具栏组（V3：标注工具行 + 输出行）；标注工具激活时选区内拖动为绘制，
+/// 实时预览与最终输出共用 AnnotationGeometry.path（同构）。
 struct SelectionView: View {
     let frame: ScreenFrame
     /// 本屏窗口矩形（局部坐标、front-to-back）；悬停高亮与点击选中用
@@ -35,16 +36,16 @@ struct SelectionView: View {
     @State private var hoveredWindow: CGRect? = nil
     /// 输出圆角半径（point）：底部滑动条实时调整；@AppStorage 持久化到 UserDefaults，跨会话记忆上次值
     @AppStorage("cornerRadius") private var cornerRadius: Double = 0
-    // MARK: 标注状态（V3 Task 3：仅状态与 UI；选区内绘制手势由 Task 4 接入）
+    // MARK: 标注状态（V3）
     /// 已完成的标注（撤销栈：撤销钮 removeLast 弹出）
     @State private var annotations: [Annotation] = []
-    /// 当前标注工具：select 不接管拖动；arrow/rect/ellipse/pen 由 Task 4 接管选区内拖动为绘制
+    /// 当前标注工具：select 不接管拖动；arrow/rect/ellipse/pen 接管选区内拖动为绘制
     @State private var activeTool: AnnotationTool = .select
     /// 当前标注颜色（色板 8 色之一）
     @State private var annotationColor: RGBA = .red
     /// 当前标注粗细（三档）
     @State private var annotationWidth: AnnotationWidth = .medium
-    /// 进行中的一笔标注（Task 4 手势期间持有；本任务仅声明不消费）
+    /// 进行中的一笔标注（绘制手势期间持有；松开时 isValid 才入栈，随后清空）
     @State private var drawingAnnotation: Annotation?
 
     var body: some View {
@@ -78,6 +79,33 @@ struct SelectionView: View {
                         .position(x: sel.midX, y: sel.midY)
                         .allowsHitTesting(false)
 
+                    // 标注实时渲染（含进行中的一笔）：屏幕预览与 AnnotationRenderer 像素合成同构
+                    // （共用 AnnotationGeometry.path；线帽/线接 round 一致，arrow = 整体 stroke + eoFill 头）。
+                    // 渲染在白边之后、move/绘制手势层之前；仅预览层不做命中（allowsHitTesting false）。
+                    // 白色标注先 stroke 1pt separator 外扩描边再上色，浅色截图中仍可见（规格约束，仅预览层）。
+                    Canvas { context, _ in
+                        for a in annotations + [drawingAnnotation].compactMap({ $0 }) {
+                            var ctx = context
+                            // path 产出选区局部坐标（原点 = 视图原点），Canvas 原点 = sel.minX：平移对齐
+                            ctx.translateBy(x: -sel.minX, y: -sel.minY)
+                            let path = Path(AnnotationGeometry.path(for: a.kind, in: sel, lineWidth: a.lineWidth))
+                            let color = Color(red: a.color.r, green: a.color.g, blue: a.color.b, opacity: a.color.a)
+                            if a.color == .white {
+                                ctx.stroke(path, with: .color(Color(nsColor: .separatorColor)),
+                                           style: StrokeStyle(lineWidth: a.lineWidth + 2, lineCap: .round, lineJoin: .round))
+                            }
+                            ctx.stroke(path, with: .color(color),
+                                       style: StrokeStyle(lineWidth: a.lineWidth, lineCap: .round, lineJoin: .round))
+                            if case .arrow = a.kind {
+                                // 线段子路径零面积对 eoFill 无副作用，与 Renderer 同构（stroke 后 fill 成实心头）
+                                ctx.fill(path, with: .color(color), style: FillStyle(eoFill: true))
+                            }
+                        }
+                    }
+                    .frame(width: sel.width, height: sel.height)
+                    .position(x: sel.midX, y: sel.midY)
+                    .allowsHitTesting(false)
+
                     SizeBadge(rect: sel)
                         .position(x: min(sel.midX, geo.size.width - 60),
                                   y: max(sel.minY - 28, 26))
@@ -110,6 +138,24 @@ struct SelectionView: View {
                                 updateAdjust(to: point, in: geo.size)
                             }
                             .environment(\.adjustEnder) { adjustKind = nil }
+
+                        // 标注绘制层：工具激活时渲染在 move 层/手柄之上——后渲染覆盖命中，
+                        // move/边/角手势让位（双击确认随之失效，回车/按钮/右键仍可用）；
+                        // 「选择」工具时本层不存在，恢复 move/手柄/双击现状。
+                        // minimumDistance 0：原地点击也走 onChanged/onEnded（点一下的无效小标注由 isValid 丢弃）
+                        if activeTool.takesOverDrag {
+                            Color.clear
+                                .frame(width: sel.width, height: sel.height)
+                                .position(x: sel.midX, y: sel.midY)
+                                .contentShape(Rectangle())
+                                .gesture(
+                                    DragGesture(minimumDistance: 0, coordinateSpace: .named("sel"))
+                                        .onChanged { value in
+                                            updateDrawing(to: value.location, start: value.startLocation, in: sel)
+                                        }
+                                        .onEnded { _ in commitDrawing(in: sel) }
+                                )
+                        }
 
                         // 选区右下角两行工具栏组（VStack(alignment: .trailing, spacing: 8)，组高 56 = 24 + 8 + 24）：
                         // 上行 = 标注工具行（工具 / 色板 / 粗细 / 撤销），下行 = 输出行（圆角滑条 + 保存 + 复制）。
@@ -298,6 +344,59 @@ struct SelectionView: View {
         if !annotations.isEmpty {
             annotations.removeLast()
         }
+    }
+
+    // MARK: 标注绘制
+
+    /// 绘制中：把选区局部 point 归一化后写入 drawingAnnotation（clamp 由 normalizedPoint 承担）。
+    /// arrow = 起点/终点两点；rect/ellipse = 两点 min/max 的归一化矩形；pen = 采样去重后追加。
+    private func updateDrawing(to point: CGPoint, start: CGPoint, in sel: CGRect) {
+        let color = annotationColor
+        let width = annotationWidth.pt
+        switch activeTool {
+        case .select:
+            break   // 不接管拖动（绘制层此时不存在）
+        case .arrow:
+            drawingAnnotation = Annotation(
+                kind: .arrow(start: AnnotationGeometry.normalizedPoint(start, in: sel),
+                             end: AnnotationGeometry.normalizedPoint(point, in: sel)),
+                color: color, lineWidth: width)
+        case .rect, .ellipse:
+            let n = Self.normalizedRect(from: start, to: point, in: sel)
+            drawingAnnotation = Annotation(kind: activeTool == .rect ? Annotation.Kind.rect(n) : .ellipse(n),
+                                           color: color, lineWidth: width)
+        case .pen:
+            let p = AnnotationGeometry.normalizedPoint(point, in: sel)
+            if drawingAnnotation == nil {
+                // 初始含首点（起点恒记录，同 shouldAppendPenPoint after nil）
+                drawingAnnotation = Annotation(kind: .pen(points: [AnnotationGeometry.normalizedPoint(start, in: sel)]),
+                                               color: color, lineWidth: width)
+            } else if var drawing = drawingAnnotation, case let .pen(points) = drawing.kind {
+                // 去重阈值是 1pt：在局部 point 空间判定（归一化间距无 pt 语义），存储仍为归一化坐标
+                let lastLocal = points.last.map { AnnotationGeometry.localPoint($0, in: sel) }
+                if AnnotationGeometry.shouldAppendPenPoint(point, after: lastLocal) {
+                    drawing.kind = .pen(points: points + [p])
+                    drawingAnnotation = drawing
+                }
+            }
+        }
+    }
+
+    /// 松开：isValid（太小的标注丢弃）才入撤销栈，随后清进行中标注（无论是否入栈）
+    private func commitDrawing(in sel: CGRect) {
+        if let drawing = drawingAnnotation, AnnotationGeometry.isValid(drawing.kind, selectionSize: sel.size) {
+            annotations.append(drawing)
+        }
+        drawingAnnotation = nil
+    }
+
+    /// 两点 min/max 的归一化矩形（x/y/w/h 由两点 min/max；clamp 由 normalizedPoint 逐角承担）
+    private static func normalizedRect(from start: CGPoint, to point: CGPoint, in selection: CGRect) -> CGRect {
+        let a = AnnotationGeometry.normalizedPoint(
+            CGPoint(x: min(start.x, point.x), y: min(start.y, point.y)), in: selection)
+        let b = AnnotationGeometry.normalizedPoint(
+            CGPoint(x: max(start.x, point.x), y: max(start.y, point.y)), in: selection)
+        return CGRect(x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y)
     }
 
     /// 移除光标 monitor（幂等）：覆盖窗被 dismissAll 时经通知触发，onDisappear 兜底重复调用
@@ -501,8 +600,8 @@ private struct ToolbarIconButton: View {
 }
 
 /// 标注工具行（24pt）：5 工具玻璃圆钮 ─ 分隔 ─ 8 色板圆点 ─ 分隔 ─ 3 粗细圆点 ─ 分隔 ─ 撤销钮。
-/// V3 Task 3 仅状态与 UI（选中态 accent 高亮、撤销弹出 annotations 栈）；
-/// arrow/rect/ellipse/pen 的绘制手势由 Task 4 经 activeTool.takesOverDrag 接入选区拖动。
+/// 仅状态与 UI（选中态 accent 高亮、撤销弹出 annotations 栈）；
+/// arrow/rect/ellipse/pen 的绘制手势由 SelectionView 经 activeTool.takesOverDrag 接入选区拖动。
 private struct AnnotationToolbar: View {
     @Binding var tool: AnnotationTool
     @Binding var color: RGBA
