@@ -1,3 +1,4 @@
+import CoreImage
 import SwiftUI
 
 /// 单屏框选视图：冻结帧 + 35% 黑遮罩挖洞 + 1pt 白边 + 液态玻璃尺寸胶囊。
@@ -39,7 +40,7 @@ struct SelectionView: View {
     // MARK: 标注状态（V3）
     /// 已完成的标注（撤销栈：撤销钮 removeLast 弹出）
     @State private var annotations: [Annotation] = []
-    /// 当前标注工具：select 不接管拖动；arrow/rect/ellipse/pen/mosaic 接管选区内拖动为绘制
+    /// 当前标注工具：select 不接管拖动；arrow/rect/ellipse/pen/blur 接管选区内拖动为绘制
     @State private var activeTool: AnnotationTool = .select
     /// 当前标注颜色（色板 8 色之一）
     @State private var annotationColor: RGBA = .red
@@ -47,8 +48,8 @@ struct SelectionView: View {
     @State private var annotationWidth: AnnotationWidth = .medium
     /// 进行中的一笔标注（绘制手势期间持有；松开时 isValid 才入栈，随后清空）
     @State private var drawingAnnotation: Annotation?
-    /// 马赛克预览降采样图缓存（单条目，见 mosaicPreviewImage）
-    @State private var mosaicPreview = MosaicPreviewCache()
+    /// 模糊预览图缓存（单条目，见 blurPreviewImage）
+    @State private var blurPreview = BlurPreviewCache()
     /// 收起式弹出面板开关（互斥：同一时间至多展开一个，打开一个即关其他；面板为触发钮 overlay，不占布局）
     @State private var showColorPalette = false
     @State private var showWidthPicker = false
@@ -87,7 +88,7 @@ struct SelectionView: View {
 
                     // 标注实时渲染（含进行中的一笔）：屏幕预览与 AnnotationRenderer 像素合成同构
                     // （共用 AnnotationGeometry.path；线帽/线接 round 一致，arrow = 整体 stroke + eoFill 头，
-                    // mosaic = clip 路径展宽 + 底图 20pt 块降采样放大）。
+                    // blur = clip 路径展宽 + 底图选区裁剪高斯模糊）。
                     // 渲染在白边之后、move/绘制手势层之前；仅预览层不做命中（allowsHitTesting false）。
                     // 白色标注先 stroke 1pt separator 外扩描边再上色，浅色截图中仍可见（规格约束，仅预览层）。
                     Canvas { context, _ in
@@ -96,15 +97,13 @@ struct SelectionView: View {
                             // path 产出选区局部坐标（原点 = 视图原点），Canvas 原点 = sel.minX：平移对齐
                             ctx.translateBy(x: -sel.minX, y: -sel.minY)
                             let path = Path(AnnotationGeometry.path(for: a.kind, in: sel, lineWidth: a.lineWidth))
-                            if case .mosaic = a.kind {
-                                // 马赛克：涂抹路径展宽为 clip，冻结帧按选区裁剪、20pt 块降采样后放大
-                                // （与 AnnotationRenderer 输出同构；颜色不参与渲染，坐标为视图坐标 → 画到 sel）
-                                if let mosaic = mosaicPreviewImage(in: sel) {
+                            if case .blur = a.kind {
+                                // 高斯模糊：涂抹路径展宽为 clip，冻结帧按选区裁剪、CIGaussianBlur（15pt × 像素比）
+                                // 后 1:1 绘制（与 AnnotationRenderer 输出同构；颜色不参与渲染，坐标为视图坐标 → 画到 sel）
+                                if let blurred = blurPreviewImage(in: sel) {
                                     ctx.clip(to: path.strokedPath(StrokeStyle(lineWidth: a.lineWidth,
                                                                               lineCap: .round, lineJoin: .round)))
-                                    // 已在 CGContext 内以 none 插值块状放大到冻结帧原生分辨率，
-                                    // 此处按选区 rect 1:1 绘制（GraphicsContext 无插值控制 API）
-                                    ctx.draw(Image(decorative: mosaic, scale: 1), in: sel)
+                                    ctx.draw(Image(decorative: blurred, scale: 1), in: sel)
                                 }
                                 continue
                             }
@@ -193,7 +192,7 @@ struct SelectionView: View {
                         }
 
                         // 选区右下角单行工具栏（紧贴选区）：
-                        // [选择|箭头|矩形|椭圆|画笔|马赛克] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]；
+                        // [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]；
                         // 色板/粗细/圆角面板为触发钮 overlay（浮于钮正上方、可盖选区、不占布局）。
                         // 整组布局（右缘锚点 / 底缘 / clamp / 面板光标带基底）见 toolbarRowLayout 单一公式源；
                         // 行内控件均为点击（无拖动手势），调整态父层手势已禁用，不会把操作漏进选区拖动
@@ -387,7 +386,7 @@ struct SelectionView: View {
     // MARK: 标注绘制
 
     /// 绘制中：把选区局部 point 归一化后写入 drawingAnnotation（clamp 由 normalizedPoint 承担）。
-    /// arrow = 起点/终点两点；rect/ellipse = 两点 min/max 的归一化矩形；pen/mosaic = 采样去重后追加。
+    /// arrow = 起点/终点两点；rect/ellipse = 两点 min/max 的归一化矩形；pen/blur = 采样去重后追加。
     private func updateDrawing(to point: CGPoint, start: CGPoint, in sel: CGRect) {
         let color = annotationColor
         let width = annotationWidth.pt
@@ -417,16 +416,16 @@ struct SelectionView: View {
                     drawingAnnotation = drawing
                 }
             }
-        case .mosaic:
-            // 同 pen：采样归一化追加（去重 1pt）；颜色照存但不参与马赛克渲染
+        case .blur:
+            // 同 pen：采样归一化追加（去重 1pt）；颜色照存但不参与模糊渲染
             let p = AnnotationGeometry.normalizedPoint(point, in: sel)
             if drawingAnnotation == nil {
-                drawingAnnotation = Annotation(kind: .mosaic(points: [AnnotationGeometry.normalizedPoint(start, in: sel)]),
+                drawingAnnotation = Annotation(kind: .blur(points: [AnnotationGeometry.normalizedPoint(start, in: sel)]),
                                                color: color, lineWidth: width)
-            } else if var drawing = drawingAnnotation, case let .mosaic(points) = drawing.kind {
+            } else if var drawing = drawingAnnotation, case let .blur(points) = drawing.kind {
                 let lastLocal = points.last.map { AnnotationGeometry.localPoint($0, in: sel) }
                 if AnnotationGeometry.shouldAppendPenPoint(point, after: lastLocal) {
-                    drawing.kind = .mosaic(points: points + [p])
+                    drawing.kind = .blur(points: points + [p])
                     drawingAnnotation = drawing
                 }
             }
@@ -441,20 +440,20 @@ struct SelectionView: View {
         drawingAnnotation = nil
     }
 
-    /// 马赛克预览图（带单条目缓存）：依赖只有冻结帧与选区，涂抹拖动期间选区不变，同选区复用
+    /// 模糊预览图（带单条目缓存）：依赖只有冻结帧与选区，涂抹拖动期间选区不变，同选区复用
     /// （引用类型缓存：@State 持有不触发视图刷新，Canvas 绘制期只读）
-    private func mosaicPreviewImage(in sel: CGRect) -> CGImage? {
-        if mosaicPreview.sel == sel, let cached = mosaicPreview.image { return cached }
-        let image = Self.makeMosaicPreview(base: frame.image, pointSize: frame.screenPointSize, sel: sel)
-        mosaicPreview.sel = sel
-        mosaicPreview.image = image
+    private func blurPreviewImage(in sel: CGRect) -> CGImage? {
+        if blurPreview.sel == sel, let cached = blurPreview.image { return cached }
+        let image = Self.makeBlurPreview(base: frame.image, pointSize: frame.screenPointSize, sel: sel)
+        blurPreview.sel = sel
+        blurPreview.image = image
         return image
     }
 
     /// 预览与 AnnotationRenderer 输出同构：冻结帧按选区像素裁剪（CGImage 图像坐标，左上原点）→
-    /// 块 = 20pt × 像素/点，降采样成一像素（none 取样）→ none 插值放回裁剪尺寸（块状观感）。
-    /// nil = 裁剪/降采样失败（该笔预览跳过，输出层 AnnotationRenderer 仍正常）
-    private static func makeMosaicPreview(base: CGImage, pointSize: CGSize, sel: CGRect) -> CGImage? {
+    /// CIGaussianBlur（半径 15pt × 像素/点），输出保持裁剪原分辨率（1:1 绘制无插值问题）。
+    /// nil = 裁剪/模糊失败（该笔预览跳过，输出层 AnnotationRenderer 仍正常）
+    private static func makeBlurPreview(base: CGImage, pointSize: CGSize, sel: CGRect) -> CGImage? {
         let pixelScale = CGFloat(base.width) / max(pointSize.width, 1)
         guard pixelScale > 0 else { return nil }
         let imageBounds = CGRect(x: 0, y: 0, width: base.width, height: base.height)
@@ -462,22 +461,13 @@ struct SelectionView: View {
                                                    width: sel.width * pixelScale, height: sel.height * pixelScale))
         guard !crop.isEmpty, crop.width >= 1, crop.height >= 1,
               let cropped = base.cropping(to: crop) else { return nil }
-        let space = cropped.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
-        let block = max(2, Int(20 * pixelScale))
-        let smallW = max(1, cropped.width / block)
-        let smallH = max(1, cropped.height / block)
-        guard let smallCtx = CGContext(data: nil, width: smallW, height: smallH, bitsPerComponent: 8,
-                                       bytesPerRow: 0, space: space,
-                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        smallCtx.interpolationQuality = .none
-        smallCtx.draw(cropped, in: CGRect(x: 0, y: 0, width: smallW, height: smallH))
-        guard let small = smallCtx.makeImage(),
-              let bigCtx = CGContext(data: nil, width: cropped.width, height: cropped.height,
-                                     bitsPerComponent: 8, bytesPerRow: 0, space: space,
-                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        bigCtx.interpolationQuality = .none
-        bigCtx.draw(small, in: CGRect(x: 0, y: 0, width: cropped.width, height: cropped.height))
-        return bigCtx.makeImage()
+        let ciImage = CIImage(cgImage: cropped)
+        let clamped = ciImage.clampedToExtent()
+        guard let filter = CIFilter(name: "CIGaussianBlur") else { return nil }
+        filter.setValue(clamped, forKey: kCIInputImageKey)
+        filter.setValue(15.0 * pixelScale, forKey: kCIInputRadiusKey)
+        let blurred = (filter.outputImage ?? clamped).cropped(to: ciImage.extent)
+        return AnnotationRenderer.sharedCIContext.createCGImage(blurred, from: ciImage.extent)
     }
 
     /// 两点 min/max 的归一化矩形（x/y/w/h 由两点 min/max；clamp 由 normalizedPoint 逐角承担）
@@ -616,9 +606,9 @@ struct SelectionView: View {
     }
 }
 
-/// 马赛克预览降采样图的单条目缓存：引用类型，@State 持有不触发视图刷新
-///（涂抹拖动期间选区不变，Canvas 每帧重绘直接命中缓存，避免反复分配全尺寸位图）
-private final class MosaicPreviewCache {
+/// 模糊预览图的单条目缓存：引用类型，@State 持有不触发视图刷新
+///（涂抹拖动期间选区不变，Canvas 每帧重绘直接命中缓存，避免逐帧重复 CI 模糊）
+private final class BlurPreviewCache {
     var sel: CGRect = .zero
     var image: CGImage?
 }
@@ -703,10 +693,10 @@ private struct ToolbarIconButton: View {
 }
 
 /// 选区右下角单行工具栏（24pt 主行 + 收起式弹出面板）：
-/// [选择|箭头|矩形|椭圆|画笔|马赛克] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]。
+/// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]。
 /// 色板/粗细/圆角面板为触发钮的 overlay：浮于钮正上方（间隙 4pt）、可盖选区、不占布局（组高恒 24）。
 /// 互斥至多展开一个：色/粗细选中即收起，圆角拖动不收起（再点圆角钮收起）。
-/// arrow/rect/ellipse/pen/mosaic 的绘制手势由 SelectionView 经 activeTool.takesOverDrag 接入选区拖动。
+/// arrow/rect/ellipse/pen/blur 的绘制手势由 SelectionView 经 activeTool.takesOverDrag 接入选区拖动。
 private struct CaptureToolbar: View {
     @Binding var tool: AnnotationTool
     @Binding var color: RGBA
@@ -741,7 +731,7 @@ private struct CaptureToolbar: View {
                 ToolbarIconButton(symbol: "rectangle", selected: tool == .rect, accessibilityLabel: "矩形") { tool = .rect }
                 ToolbarIconButton(symbol: "circle", selected: tool == .ellipse, accessibilityLabel: "椭圆") { tool = .ellipse }
                 ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
-                ToolbarIconButton(symbol: "checkerboard.rectangle", selected: tool == .mosaic, accessibilityLabel: "马赛克") { tool = .mosaic }
+                ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") { tool = .blur }
             }
             separator
             currentColorButton

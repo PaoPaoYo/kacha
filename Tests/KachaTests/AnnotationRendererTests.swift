@@ -45,23 +45,24 @@ final class AnnotationRendererTests: XCTestCase {
         XCTAssertTrue(out === base)
     }
 
-    func test_composite_mosaicPixelatesRegionIgnoringColor() {
-        // 底图：bitmap 顶部 20 行黑、其余白（CG 底左原点：顶部 = y 80..100）
+    func test_composite_blurRegionIgnoresColor() {
+        // 底图：bitmap 顶部 40 行黑、其余白（CG 底左原点：黑块 = y 60..100）
         let ctx = CGContext(data: nil, width: 100, height: 100, bitsPerComponent: 8,
                             bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
         ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
-        ctx.fill(CGRect(x: 0, y: 80, width: 100, height: 20))
+        ctx.fill(CGRect(x: 0, y: 60, width: 100, height: 40))
         ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-        ctx.fill(CGRect(x: 0, y: 0, width: 100, height: 80))
+        ctx.fill(CGRect(x: 0, y: 0, width: 100, height: 60))
         let base = ctx.makeImage()!
-        // 横向涂抹 point y=10（落在顶部黑块内）；红色不参与马赛克渲染
-        let a = Annotation(kind: .mosaic(points: [CGPoint(x: 0.2, y: 0.1), CGPoint(x: 0.8, y: 0.1)]),
+        // 横向涂抹 point y=10（距黑块边缘 30px，远超 15pt 模糊半径的影响）；红色不参与模糊渲染
+        let a = Annotation(kind: .blur(points: [CGPoint(x: 0.2, y: 0.1), CGPoint(x: 0.8, y: 0.1)]),
                            color: .red, lineWidth: 4)
         let out = AnnotationRenderer.composite(base, annotations: [a], selectionPointWidth: 100)
-        // 涂抹区内：块化取样自顶部黑块 → 黑（若被红色染色或上下镜像取到白块则失败）
+        // 涂抹区内：黑块模糊后仍近黑（实测 ~43/通道：CIGaussianBlur 有效扩散约为半径 2 倍）；
+        // 阈值 300 排除红色描边染色（362）与上下镜像取到白区（765）
         let inside = pixel(out, 50, 10)
-        XCTAssertLessThan(Int(inside.0) + Int(inside.1) + Int(inside.2), 120)
+        XCTAssertLessThan(Int(inside.0) + Int(inside.1) + Int(inside.2), 300)
         // 涂抹区横向之外（x=5 不在 20..80 折线上）仍为底图黑块（clip 未外溢）
         let beside = pixel(out, 5, 10)
         XCTAssertLessThan(Int(beside.0) + Int(beside.1) + Int(beside.2), 120)
