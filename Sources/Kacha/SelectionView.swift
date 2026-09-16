@@ -44,13 +44,13 @@ struct SelectionView: View {
                     .resizable()
                     .frame(width: geo.size.width, height: geo.size.height)
 
-                let maskSelection = sel ?? ((phase == .idle) ? hoveredWindow : nil)
-                // 挖洞圆角与白边一致（选区洞）；idle 悬停窗口洞保持直角
-                DimmingMask(selection: maskSelection, cornerRadius: sel != nil ? cornerRadius : 0)
+                let maskSelection = validDragRect ?? ((phase != .adjusting) ? hoveredWindow : nil)
+                // 挖洞圆角与白边一致（选区洞）；悬停窗口洞保持直角
+                DimmingMask(selection: maskSelection, cornerRadius: validDragRect != nil ? cornerRadius : 0)
                     .fill(.black.opacity(0.35), style: FillStyle(eoFill: true))
                     .allowsHitTesting(false)
 
-                if phase == .idle, let hw = hoveredWindow {
+                if let hw = hoveredWindow, phase != .adjusting, validDragRect == nil {
                     Rectangle()
                         .strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
                         .frame(width: hw.width, height: hw.height)
@@ -214,6 +214,12 @@ struct SelectionView: View {
         }
         if phase == .adjusting { return selection }
         return nil
+    }
+
+    /// 进行中且有效（≥4pt）的拖拽矩形；按下未动/微拖时为 nil
+    private var validDragRect: CGRect? {
+        guard let sel = activeSelection, SelectionGeometry.isValid(sel) else { return nil }
+        return sel
     }
 
     // MARK: 调整逻辑
