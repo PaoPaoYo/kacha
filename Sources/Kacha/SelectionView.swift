@@ -45,7 +45,8 @@ struct SelectionView: View {
                     .frame(width: geo.size.width, height: geo.size.height)
 
                 let maskSelection = sel ?? ((phase == .idle) ? hoveredWindow : nil)
-                DimmingMask(selection: maskSelection)
+                // 挖洞圆角与白边一致（选区洞）；idle 悬停窗口洞保持直角
+                DimmingMask(selection: maskSelection, cornerRadius: sel != nil ? cornerRadius : 0)
                     .fill(.black.opacity(0.35), style: FillStyle(eoFill: true))
                     .allowsHitTesting(false)
 
@@ -111,8 +112,8 @@ struct SelectionView: View {
                                     .font(.system(size: 12, weight: .medium).monospacedDigit())
                                     .frame(width: 24)
                             }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
+                            .padding(.horizontal, 10)
+                            .frame(height: 24)
                             .glassEffect(in: Capsule())
                             ToolbarButton(label: "保存", action: save)
                             ToolbarButton(label: "复制", action: confirm)
@@ -315,7 +316,7 @@ struct SelectionView: View {
     /// 右缘锚定原复制钮右缘（copyX + 22，copyX 沿用 buttonCenters clamp——贴右缘选区时已收进屏内）；
     /// 左缘出屏时整行右移（滑条优先保证可见，右缘允许越过锚点）；y 沿用按钮 y
     /// （belowFits ? sel.maxY + 20 : sel.maxY - 20，下方放不下时整行随按钮一起收进选区内侧）。
-    /// 行宽 376 为估算常量（胶囊 ≈264 + 12 + 保存 44 + 12 + 复制 44），仅用于光标命中区；
+    /// 行宽 376 为估算常量（胶囊 ≈256 + 12 + 保存 44 + 12 + 复制 44，命中区左缘含约 8pt 容差），仅用于光标命中区；
     /// 实际渲染用右缘 pin + offset，不依赖该估算。
     static func toolbarRowLayout(sel: CGRect, bounds: CGSize) -> (right: CGFloat, centerY: CGFloat, zone: CGRect) {
         let rowWidth: CGFloat = 376
@@ -384,14 +385,16 @@ enum SelectionHandleKind {
     case move
 }
 
-/// 整屏矩形挖去选区的遮罩形状（配合 eoFill 挖洞）
+/// 整屏矩形挖去选区的遮罩形状（配合 eoFill 挖洞）：洞为圆角矩形（radius 0 即直角）
 private struct DimmingMask: Shape {
     let selection: CGRect?
+    /// 洞的圆角（point）：选区洞与白边一致，窗口高亮洞为 0
+    let cornerRadius: CGFloat
 
     func path(in rect: CGRect) -> Path {
         var path = Rectangle().path(in: rect)
         if let selection {
-            path.addRect(selection)
+            path.addPath(RoundedRectangle(cornerRadius: cornerRadius).path(in: selection))
         }
         return path
     }
