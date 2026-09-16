@@ -80,8 +80,22 @@ final class ScreenCaptureService {
         return CaptureSession(frames: frames, windowsByScreen: windowsByScreen)
     }
 
+    /// screencapture -D 接受 1 起始的显示器序号（非 CGDirectDisplayID）；
+    /// 用 CGGetActiveDisplayList 枚举序号映射（审查实测：内屏 ID=1 与序号重合系巧合）
+    private static func displayIndex(of displayID: CGDirectDisplayID) -> Int? {
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(0, nil, &count)
+        guard count > 0 else { return nil }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetActiveDisplayList(count, &ids, &count)
+        return ids.firstIndex(of: displayID).map { $0 + 1 }
+    }
+
     /// 用 /usr/sbin/screencapture 抓单屏当前帧（WindowServer 管线，保留窗口阴影），落盘 PNG 后读回 CGImage
     private func captureDisplayImage(displayID: CGDirectDisplayID) async throws -> CGImage {
+        guard let index = Self.displayIndex(of: displayID) else {
+            throw CaptureError.captureFailed(underlying: NSError(domain: "kacha.screencapture", code: -2))
+        }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("kacha-\(UUID().uuidString).png")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -90,7 +104,7 @@ final class ScreenCaptureService {
             () -> Int32 in
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-            proc.arguments = ["-x", "-D", String(displayID), "-t", "png", url.path]
+            proc.arguments = ["-x", "-D", String(index), "-t", "png", url.path]
             try proc.run()
             proc.waitUntilExit()
             return proc.terminationStatus

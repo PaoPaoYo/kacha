@@ -17,6 +17,8 @@ app: build
 	codesign --force --sign $(IDENTITY) $(APP_DIR)
 
 install: app
+	-@osascript -e 'quit app "Kacha"' 2>/dev/null || true
+	-@sleep 1
 	rm -rf /Applications/$(APP_NAME).app
 	cp -R $(APP_DIR) /Applications/
 	open /Applications/$(APP_NAME).app

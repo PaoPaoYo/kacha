@@ -437,10 +437,10 @@ private func roundedCornerImage(_ image: CGImage, pixelRadius: CGFloat) -> CGIma
 
 **Interfaces:**
 - Consumes: `CaptureSession` 结构、窗口枚举（不变）、NSScreen.displayID
-- Produces: `captureSession()` 签名不变；内部抓帧从 SCScreenshotManager 换为 `/usr/sbin/screencapture -x -D <displayID> -t png <tmp>` → CGImage
+- Produces: `captureSession()` 签名不变；内部抓帧从 SCScreenshotManager 换为 `/usr/sbin/screencapture -x -D <1 起始序号（由 CGGetActiveDisplayList 映射）> -t png <tmp>` → CGImage
 
 **规格：**
-- 逐屏：`screencapture -x -D <displayID> -t png <临时文件>`（-x 静音；-D 接 CGDirectDisplayID；默认物理像素分辨率、不含鼠标指针）→ `CGImage(pngDataProviderSource:)` 读入 → 删除临时文件
+- 逐屏：`screencapture -x -D <1 起始序号（由 CGGetActiveDisplayList 映射）> -t png <临时文件>`（-x 静音；-D 接 1 起始显示器序号，非 CGDirectDisplayID；默认物理像素分辨率、不含鼠标指针）→ `CGImage(pngDataProviderSource:)` 读入 → 删除临时文件
 - 进程等待放后台（`Task.detached` 或 async let），不卡 MainActor
 - 失败（非零退出/读图失败）→ `CaptureError.captureFailed`
 - 窗口枚举（SCShareableContent）与全部下游链路（坐标/裁剪/圆角/复制/保存）不动
