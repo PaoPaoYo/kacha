@@ -453,10 +453,10 @@ struct SelectionView: View {
     /// 时组底缘 sel.maxY + 28（主行中心 sel.maxY + 16），否则收进选区内侧组底缘 sel.maxY - 4
     /// （主行中心 sel.maxY - 16，上下对称留 4pt）。
     static func toolbarRowLayout(sel: CGRect, bounds: CGSize) -> (right: CGFloat, bottom: CGFloat, zone: CGRect) {
-        // 主行实际宽 ≈427（工具 5×24 + 4×6 ＋ 分隔 1 ＋ 色钮 24 ＋ 粗细钮 24 ＋ 圆角钮 48 ＋ 分隔 1
-        // ＋ 撤销 24 ＋ 分隔 1 ＋ 保存 44 ＋ 复制 44 ＋ 9×8 段间距），命中区左缘含约 9pt 容差 → 436，
+        // 主行实际宽 ≈387（工具 5×24 + 4×6 ＋ 分隔 1 ＋ 色钮 24 ＋ 粗细钮 24 ＋ 圆角钮 48 ＋ 分隔 1
+        // ＋ 撤销 24 ＋ 分隔 1 ＋ 保存钮 24 ＋ 复制钮 24 ＋ 9×8 段间距），命中区左缘含约 9pt 容差 → 396，
         // 仅用于光标命中区与左缘 clamp；实际渲染用右缘 pin + offset，不依赖该估算。
-        let rowWidth: CGFloat = 436
+        let rowWidth: CGFloat = 396
         let rowHeight: CGFloat = 24
         var right = sel.maxX
         if right - rowWidth < 6 {
@@ -565,28 +565,13 @@ private struct SizeBadge: View {
     }
 }
 
-/// 液态玻璃胶囊文字钮（44×24）：保存 / 复制共用规格
-private struct ToolbarButton: View {
-    let label: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text(label)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.primary)
-                .frame(width: 44, height: 24)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .glassEffect(in: Capsule())
-    }
-}
-
-/// 液态玻璃圆形图标钮（24×24）：标注工具 / 撤销共用规格；selected 时 accent 描边高亮
+/// 液态玻璃圆形图标钮（24×24）：标注工具 / 撤销 / 保存 / 复制共用规格；
+/// selected 时 accent 描边高亮（仅选择态工具钮用，动作钮恒 false）
 private struct ToolbarIconButton: View {
     let symbol: String
     let selected: Bool
+    /// 无障碍标签（图标钮可读性，全部钮显式传入中文名）
+    let accessibilityLabel: String
     let action: () -> Void
 
     var body: some View {
@@ -599,6 +584,7 @@ private struct ToolbarIconButton: View {
         }
         .buttonStyle(.plain)
         .glassEffect(in: Circle())
+        .accessibilityLabel(accessibilityLabel)
         .overlay {
             if selected {
                 Circle().strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
@@ -641,23 +627,30 @@ private struct CaptureToolbar: View {
             HStack(spacing: 6) {
                 // 「move」在 macOS 26 SDK 缺失（NSImage(systemSymbolName:) 返回 nil）；cursorarrow 视觉不佳，
                 // 选择工具改用手型 hand.draw（probe 实证存在）
-                ToolbarIconButton(symbol: "hand.draw", selected: tool == .select) { tool = .select }
-                ToolbarIconButton(symbol: "arrow.up.right", selected: tool == .arrow) { tool = .arrow }
-                ToolbarIconButton(symbol: "rectangle", selected: tool == .rect) { tool = .rect }
-                ToolbarIconButton(symbol: "circle", selected: tool == .ellipse) { tool = .ellipse }
-                ToolbarIconButton(symbol: "scribble", selected: tool == .pen) { tool = .pen }
+                ToolbarIconButton(symbol: "hand.draw", selected: tool == .select, accessibilityLabel: "选择") { tool = .select }
+                ToolbarIconButton(symbol: "arrow.up.right", selected: tool == .arrow, accessibilityLabel: "箭头") { tool = .arrow }
+                ToolbarIconButton(symbol: "rectangle", selected: tool == .rect, accessibilityLabel: "矩形") { tool = .rect }
+                ToolbarIconButton(symbol: "circle", selected: tool == .ellipse, accessibilityLabel: "椭圆") { tool = .ellipse }
+                ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
             }
             separator
             currentColorButton
             currentWidthButton
             radiusButton
             separator
-            ToolbarIconButton(symbol: "arrow.uturn.backward", selected: false, action: onUndo)
+            ToolbarIconButton(symbol: "arrow.uturn.backward", selected: false, accessibilityLabel: "撤销", action: onUndo)
                 .opacity(canUndo ? 1 : 0.4)
                 .disabled(!canUndo)
             separator
-            ToolbarButton(label: "保存", action: onSave)
-            ToolbarButton(label: "复制", action: onCopy)
+            // 动作钮：与其他工具钮统一 24×24 玻璃圆钮规格（无选中态），accessibilityLabel 保可读性
+            ToolbarIconButton(symbol: "square.and.arrow.down",
+                              selected: false,
+                              accessibilityLabel: "保存",
+                              action: onSave)
+            ToolbarIconButton(symbol: "doc.on.doc",
+                              selected: false,
+                              accessibilityLabel: "复制",
+                              action: onCopy)
         }
         .frame(height: 24)
     }
