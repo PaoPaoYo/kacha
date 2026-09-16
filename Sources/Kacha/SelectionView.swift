@@ -97,37 +97,23 @@ struct SelectionView: View {
                 // 空白处按下拖拽：画新选区（minimumDistance 0：原地点击也走 onEnded）
                 DragGesture(minimumDistance: 0, coordinateSpace: .named("sel"))
                     .onChanged { value in
-                        // 调整态下，选区内（含手柄命中区外扩 10pt）或任一按钮上起点的触摸归子层（move/手柄/两按钮），
-                        // 父层忽略，避免 minDist-0 的父层手势与子层同时跟踪污染 dragStart/dragCurrent
-                        //（按钮若被父层污染，dragStart 未清时会卡 confirm()/save() 的 dragStart == nil 守卫）
-                        let inChildZone: Bool
-                        if phase == .adjusting {
-                            inChildZone = selection.insetBy(dx: -10, dy: -10).contains(value.startLocation)
-                                || Self.buttonFrames(sel: selection, in: geo.size).contains { $0.contains(value.startLocation) }
-                        } else {
-                            inChildZone = false
-                        }
-                        if inChildZone { return }
-                        // 调整态下重画不改写 phase：松开无效时仍按调整态处理（保留当前选区）
-                        if phase != .adjusting { phase = .dragging }
+                        // 调整态：父层（空白重画）手势完全禁用——选区内/外起点都忽略，重画只能从 idle/dragging 起步；
+                        // 子层（move/手柄/按钮）手势独立跟踪不受影响，dragStart 也不会被父层污染
+                        if phase == .adjusting { return }
+                        phase = .dragging
                         dragStart = value.startLocation
                         dragCurrent = value.location
                     }
                     .onEnded { value in
-                        let inChildZone: Bool
-                        if phase == .adjusting {
-                            inChildZone = selection.insetBy(dx: -10, dy: -10).contains(value.startLocation)
-                        } else {
-                            inChildZone = false
-                        }
-                        if inChildZone { return }
+                        // 调整态：同 onChanged 全部忽略（选区外拖动什么也不做）
+                        if phase == .adjusting { return }
                         defer { dragStart = nil; dragCurrent = nil }
                         let rect = SelectionGeometry.normalize(from: value.startLocation, to: value.location)
                         if SelectionGeometry.isValid(rect) {
                             selection = rect
                             phase = .adjusting
-                        } else if phase != .adjusting {
-                            // 非调整态的误触（原地点击）才取消；调整态下无效点击保留当前选区
+                        } else {
+                            // 无效拖拽 / minimumDistance 0 误触（原地点击）：取消
                             onCancel()
                         }
                     }
@@ -158,11 +144,12 @@ struct SelectionView: View {
                     return event
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .kachaOverlayDismissed)) { _ in
+                // 覆盖窗被 dismissAll 关闭时立即清 monitor（防泄漏）；onDisappear 仅作兜底
+                removeCursorMonitor()
+            }
             .onDisappear {
-                if let cursorMonitor {
-                    NSEvent.removeMonitor(cursorMonitor)
-                }
-                cursorMonitor = nil
+                removeCursorMonitor()
             }
         }
     }
@@ -229,23 +216,37 @@ struct SelectionView: View {
         onSave(selection)
     }
 
+    /// 移除光标 monitor（幂等）：覆盖窗被 dismissAll 时经通知触发，onDisappear 兜底重复调用
+    private func removeCursorMonitor() {
+        if let cursorMonitor {
+            NSEvent.removeMonitor(cursorMonitor)
+        }
+        cursorMonitor = nil
+    }
+
     // MARK: 光标（NSEvent monitor 单一决策点）
 
-    /// 8 手柄命中判定（每点 ±8pt 方形命中区），返回对应系统 frameResize 位置
-    private static func handlePosition(at p: CGPoint, in sel: CGRect) -> NSCursor.FrameResizePosition? {
-        let handles: [(CGPoint, NSCursor.FrameResizePosition)] = [
+    /// 四角命中判定（每点 ±8pt 方形命中区），返回对应对角 frameResize 位置
+    private static func cornerPosition(at p: CGPoint, in sel: CGRect) -> NSCursor.FrameResizePosition? {
+        let corners: [(CGPoint, NSCursor.FrameResizePosition)] = [
             (CGPoint(x: sel.minX, y: sel.minY), .topLeft),
-            (CGPoint(x: sel.midX, y: sel.minY), .top),
             (CGPoint(x: sel.maxX, y: sel.minY), .topRight),
-            (CGPoint(x: sel.maxX, y: sel.midY), .right),
             (CGPoint(x: sel.maxX, y: sel.maxY), .bottomRight),
-            (CGPoint(x: sel.midX, y: sel.maxY), .bottom),
             (CGPoint(x: sel.minX, y: sel.maxY), .bottomLeft),
-            (CGPoint(x: sel.minX, y: sel.midY), .left),
         ]
-        for (hp, position) in handles where abs(p.x - hp.x) <= 8 && abs(p.y - hp.y) <= 8 {
+        for (cp, position) in corners where abs(p.x - cp.x) <= 8 && abs(p.y - cp.y) <= 8 {
             return position
         }
+        return nil
+    }
+
+    /// 整边命中判定（边线 ±8，端点缩 8pt 与 EdgeHandle 命中条一致）：
+    /// true = 上下边（resizeUpDown）/ false = 左右边（resizeLeftRight）/ nil = 未命中
+    private static func edgeAxis(at p: CGPoint, in sel: CGRect) -> Bool? {
+        let inXSpan = p.x >= sel.minX + 8 && p.x <= sel.maxX - 8
+        let inYSpan = p.y >= sel.minY + 8 && p.y <= sel.maxY - 8
+        if inXSpan, abs(p.y - sel.minY) <= 8 || abs(p.y - sel.maxY) <= 8 { return true }
+        if inYSpan, abs(p.x - sel.minX) <= 8 || abs(p.x - sel.maxX) <= 8 { return false }
         return nil
     }
 
@@ -279,9 +280,13 @@ struct SelectionView: View {
             NSCursor.crosshair.set()
             return
         }
-        // b. 命中 8 手柄 → 对应方向缩放光标
-        if let position = handlePosition(at: p, in: state.selection) {
+        // b. 命中手柄（几何式）：先四角 ±8 → 对角缩放光标，再边线 ±8 → 上下/左右缩放光标
+        if let position = cornerPosition(at: p, in: state.selection) {
             NSCursor.frameResize(position: position, directions: .all).set()
+            return
+        }
+        if let vertical = edgeAxis(at: p, in: state.selection) {
+            (vertical ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).set()
             return
         }
         // b'. 悬停保存/复制按钮 → pointingHand
@@ -397,6 +402,13 @@ private struct HandleLayer: View {
     let selection: CGRect
 
     var body: some View {
+        let edges: [(SelectionHandleKind, CGRect)] = [
+            // 命中条厚 16pt（边线 ±8），端点各缩 8pt 让角区独占（角手柄后渲染、命中优先）
+            (.top, CGRect(x: selection.minX + 8, y: selection.minY - 8, width: selection.width - 16, height: 16)),
+            (.bottom, CGRect(x: selection.minX + 8, y: selection.maxY - 8, width: selection.width - 16, height: 16)),
+            (.left, CGRect(x: selection.minX - 8, y: selection.minY + 8, width: 16, height: selection.height - 16)),
+            (.right, CGRect(x: selection.maxX - 8, y: selection.minY + 8, width: 16, height: selection.height - 16)),
+        ]
         let handles: [(SelectionHandleKind, CGPoint)] = [
             (.topLeft, CGPoint(x: selection.minX, y: selection.minY)),
             (.top, CGPoint(x: selection.midX, y: selection.minY)),
@@ -409,10 +421,48 @@ private struct HandleLayer: View {
         ]
 
         ZStack(alignment: .topLeading) {
+            // 先渲染整边命中条，后渲染角手柄：重叠区角优先
+            ForEach(edges, id: \.0) { kind, rect in
+                EdgeHandle(kind: kind, rect: rect)
+            }
             ForEach(handles, id: \.0) { kind, position in
                 Handle(kind: kind, position: position)
             }
         }
+    }
+}
+
+/// 整边命中条（透明）：拖动任意一条边改变大小，手势模式与 Handle 一致
+private struct EdgeHandle: View {
+    let kind: SelectionHandleKind
+    let rect: CGRect
+
+    @Environment(\.adjustStarter) private var starter
+    @Environment(\.adjustUpdater) private var updater
+    @Environment(\.adjustEnder) private var ender
+    /// 手势已开始标志：minimumDistance 1 下首个 onChanged 的 translation 通常已非零，
+    /// 不能用 `translation == .zero` 判起点（否则 starter 永不触发、手柄失效）
+    @State private var began = false
+
+    var body: some View {
+        Color.clear
+            .frame(width: rect.width, height: rect.height)
+            .contentShape(Rectangle())
+            .position(x: rect.midX, y: rect.midY)
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .named("sel"))
+                    .onChanged { value in
+                        if !began {
+                            began = true
+                            starter(kind, value.startLocation)
+                        }
+                        updater(value.location)
+                    }
+                    .onEnded { _ in
+                        began = false
+                        ender()
+                    }
+            )
     }
 }
 

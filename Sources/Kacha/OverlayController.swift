@@ -16,6 +16,11 @@ enum CaptureAction {
     case save
 }
 
+/// 覆盖窗全部关闭的广播：SelectionView 借此立即移除自身的 NSEvent monitor（防泄漏）
+extension Notification.Name {
+    static let kachaOverlayDismissed = Notification.Name("kachaOverlayDismissed")
+}
+
 @MainActor
 final class OverlayController {
     private var panels: [KeyablePanel] = []
@@ -62,6 +67,8 @@ final class OverlayController {
     }
 
     func dismissAll() {
+        // 先广播再关窗：各屏 SelectionView 收到后立即移除光标 monitor（onDisappear 为兜底路径）
+        NotificationCenter.default.post(name: .kachaOverlayDismissed, object: nil)
         for panel in panels { panel.orderOut(nil) }
         panels.removeAll()
     }
