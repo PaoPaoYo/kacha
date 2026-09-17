@@ -1281,29 +1281,19 @@ private struct CaptureToolbar: View {
                 }
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
-            if showWidthPicker, tool != .select,
+            // blur 双滑块面板。不变式：showWidthPicker 置真 ⟹ tool == .blur 恒成立——
+            // 置真唯一入口是宽钮的 togglePanel(.width)，宽钮只在 blur 态渲染（显隐槽），
+            // 且切工具 onChange 全收面板；故无 tool 守卫、无非 blur 分支（原 pen 系三档
+            // 粗细独立面板为色宽合并前的残留，不可达已删）
+            if showWidthPicker,
                let anchorX = panelAnchors[PanelID.width.rawValue] {
-                if tool == .blur {
-                    panelSlot(anchorX: anchorX) {
-                        panelCapsuleAdaptive {
-                            blurSliderPanel
-                        }
-                        .offset(y: panelAnchorOffset)
+                panelSlot(anchorX: anchorX) {
+                    panelCapsuleAdaptive {
+                        blurSliderPanel
                     }
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-                } else {
-                    panelSlot(anchorX: anchorX) {
-                        panelCapsule {
-                            HStack(spacing: 6) {
-                                ForEach(AnnotationWidth.allCases, id: \.pt) { w in
-                                    widthButton(w) { showWidthPicker = false }
-                                }
-                            }
-                        }
-                        .offset(y: panelAnchorOffset)
-                    }
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .offset(y: panelAnchorOffset)
                 }
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
             if showRadiusSlider, let anchorX = panelAnchors[PanelID.radius.rawValue] {
                 panelSlot(anchorX: anchorX) {
