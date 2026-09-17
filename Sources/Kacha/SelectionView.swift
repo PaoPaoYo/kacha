@@ -58,13 +58,16 @@ struct SelectionView: View {
     @State private var showColorPalette = false
     @State private var showWidthPicker = false
     @State private var showRadiusSlider = false
-    /// 工具栏手动拖动偏移：nil = 默认锚定（选区右下，toolbarRowLayout）；非 nil = 相对锚定位置的
-    /// 偏移（松手时 clamp 到屏内 6/4pt 边距后的合法值；吸附阈值内置回 nil）
-    @State private var toolbarOffset: CGSize? = nil
+    /// 工具栏自由位置（sel 空间胶囊右下角锚点的绝对点）：nil = 锚定跟随模式（贴选区右下、随选区
+    /// 移动）；非 nil = 脱离锚定——不随选区移动/缩放变化、不做屏幕边缘 clamp（用户明确不要避让，
+    /// 可拖出屏缘），保持到下次截图（@State 每会话重置）。吸附：松手落点距锚定点 <12pt 回 nil
+    /// 恢复跟随。用右下角锚点而非几何中心：锚定渲染是 trailing/bottom 对齐，锚点即渲染参照，
+    /// 首帧基线零跳变（中心语义需实测胶囊宽，估算误差会致起步跳动）
+    @State private var toolbarPosition: CGPoint? = nil
     /// 工具栏拖动进行中（视觉 scale 1.02 + onChanged 首帧基线标记）
     @State private var toolbarDragging = false
-    /// 拖动起始偏移基线：onChanged 首帧从 toolbarOffset（nil 视作 .zero）解包，后续帧累加 translation
-    @State private var toolbarDragBase: CGSize = .zero
+    /// 拖动起始渲染点基线：onChanged 首帧从 toolbarPosition（nil 视作当时锚定点）解包，后续帧累加 translation
+    @State private var toolbarDragBase: CGPoint = .zero
 
     var body: some View {
         GeometryReader { geo in
@@ -98,8 +101,8 @@ struct SelectionView: View {
             // 面板展开/收起源同步：任一面板开 → 行矩形向上扩 60pt 光标带，全收起 → .zero
             syncPanelBand(sel: selection, bounds: geo.size)
         }
-        .onChange(of: toolbarOffset) { _, _ in
-            // 工具栏拖动源同步：光标带跟随含偏移的最终组矩形（拖动中逐帧更新）
+        .onChange(of: toolbarPosition) { _, _ in
+            // 工具栏拖动/吸附源同步：光标带跟随渲染位移后的行矩形（拖动中逐帧更新）
             syncPanelBand(sel: selection, bounds: geo.size)
         }
         .onChange(of: blurPenWidth) { _, new in
@@ -224,13 +227,19 @@ struct SelectionView: View {
             }
     }
 
-    /// 面板展开光标带同步（selection / 面板开关 / toolbarOffset 三类 onChange 源共用）；
+    /// 面板展开光标带同步（selection / 面板开关 / toolbarPosition 三类 onChange 源共用）；
+    /// 自由位置模式把行矩形按「渲染锚点位移」（position − 锚定点）平移，锚定跟随 = .zero；
     /// 面板全收起时 panelBand 公式自回 .zero
     private func syncPanelBand(sel: CGRect?, bounds: CGSize) {
+        var drag: CGSize = .zero
+        if let p = toolbarPosition, let sel, SelectionGeometry.isValid(sel) {
+            let g = Self.toolbarRowLayout(sel: sel, bounds: bounds)
+            drag = CGSize(width: p.x - g.right, height: p.y - g.bottom)
+        }
         cursorState.panelBand = Self.panelBand(
             sel: sel, bounds: bounds,
             anyPanelOpen: showColorPalette || showWidthPicker || showRadiusSlider,
-            drag: toolbarOffset ?? .zero)
+            drag: drag)
     }
 
     /// 光标快照初始化 + 安装单一决策点 monitor（替代 cursorRect / onHover 方案）
@@ -454,15 +463,19 @@ struct SelectionView: View {
         }
     }
 
-    /// 选区右下角单行工具栏（紧贴选区，拖动玻璃块上非按钮的像素即可挪开）：
+    /// 选区右下角单行工具栏：锚定跟随（toolbarPosition == nil，紧贴选区右下、随选区移动）或
+    /// 自由绝对位置（拖动后 toolbarPosition 非 nil，不随选区移动/缩放、不 clamp 屏缘，
+    /// 保持到下次截图会话重置）：
     /// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细][圆角]（按工具显隐）‖ [撤销]（空栈隐藏）‖ [保存][复制]；
     /// 色板/粗细/圆角面板为触发钮 overlay（浮于钮正上方、可盖选区、不占布局）。
-    /// 整组布局（右缘锚点 / 底缘 / clamp / 面板光标带基底）见 toolbarRowLayout 单一公式源。
+    /// 锚定点/光标带基底见 toolbarRowLayout 单一公式源。
     /// 独立成方法：主 body 过大触发编译器「unable to type-check in reasonable time」，拆块缓解
     @ViewBuilder
     private func captureToolbar(in geo: GeometryProxy, sel: CGRect) -> some View {
         let group = Self.toolbarRowLayout(sel: sel, bounds: geo.size)
-        let toolbarDrag = toolbarOffset ?? .zero
+        // 渲染锚点：自由位置 = toolbarPosition（胶囊右下角在 sel 空间的绝对点）；锚定跟随 = 组锚点。
+        // 选区移动/缩放只变 group，renderPoint 不变 → 自由态工具栏纹丝不动（需求核心）
+        let renderPoint = toolbarPosition ?? CGPoint(x: group.right, y: group.bottom)
         CaptureToolbar(tool: $activeTool,
                        color: $annotationColor,
                        lineWidth: $annotationWidth,
@@ -472,11 +485,10 @@ struct SelectionView: View {
                        showColorPalette: $showColorPalette,
                        showWidthPicker: $showWidthPicker,
                        showRadiusSlider: $showRadiusSlider,
-                       toolbarOffset: $toolbarOffset,
+                       toolbarPosition: $toolbarPosition,
                        toolbarDragging: $toolbarDragging,
                        toolbarDragBase: $toolbarDragBase,
-                       clampRow: group.row,
-                       screenBounds: geo.size,
+                       anchor: CGPoint(x: group.right, y: group.bottom),
                        canUndo: !annotations.isEmpty,
                        onUndo: undoLastAnnotation,
                        onSave: save,
@@ -485,12 +497,12 @@ struct SelectionView: View {
         // 拖动中轻微放大反馈。不加 hover 光标——applyCursor monitor 的 mouseMoved
         // arrow 兜底会覆盖 onHover 设置，保持 arrow（macOS 工具栏惯例）
         .scaleEffect(toolbarDragging ? 1.02 : 1)
-        // 组右缘/底缘先 pin 到屏右屏底、再 offset 到锚点 + 手动拖动偏移：右对齐不依赖行宽；
-        // 底缘锚定主行——面板展开向上生长，不推挤主行（主行不跳动）
+        // 全屏 wrapper 右下对齐（右对齐不依赖行宽；底缘锚定主行——面板展开向上生长不推挤主行），
+        // 再 offset 把胶囊右下角送到 renderPoint：锚定态 = 组锚点（原行为），自由态 = 手动绝对位置
         .frame(width: geo.size.width, height: geo.size.height,
                alignment: Alignment(horizontal: .trailing, vertical: .bottom))
-        .offset(x: group.right - geo.size.width + toolbarDrag.width,
-                y: group.bottom - geo.size.height + toolbarDrag.height)
+        .offset(x: renderPoint.x - geo.size.width,
+                y: renderPoint.y - geo.size.height)
     }
 
     // MARK: 标注绘制
@@ -647,8 +659,9 @@ struct SelectionView: View {
     }
 
     /// 单行工具栏（主行 24pt；色板/粗细/圆角面板为触发钮 overlay，不占布局）布局单一公式源
-    /// （渲染 offset / 面板光标带基底共用）：组右缘锚定选区白边右缘（sel.maxX，与边框对齐）；
-    /// 左缘出屏时整组右移（rowWidth 取主行估算宽 + 容差，右缘允许越过锚点）；
+    /// （锚定锚点 = 渲染/吸附判定参照、面板光标带基底共用）：组右缘锚定选区白边右缘（sel.maxX，
+    /// 与边框对齐）；锚定模式左缘出屏时整组右移（rowWidth 取主行估算宽 + 容差，右缘允许越过锚点；
+    /// 仅约束锚定初始位置，拖动后的自由位置不 clamp）；
     /// 锚点 = 主行底缘 bottom，整组紧贴选区：下方放得下（组顶贴 sel.maxY + 4、组底再留 8pt 屏底余量）
     /// 时组底缘 sel.maxY + 38（主行中心 sel.maxY + 21），否则收进选区内侧组底缘 sel.maxY - 4
     /// （主行 34pt 高：底部留 4pt，主体伸入选区内 38pt）。
@@ -656,9 +669,9 @@ struct SelectionView: View {
         // 玻璃胶囊实际宽：全显（标注工具 + 撤销栈非空）≈437（工具 6×24+5×6 ＋ 分隔 1
         // ＋ 色钮 24 ＋ 粗细钮 24 ＋ 圆角钮 48 ＋ 分隔 1 ＋ 撤销 24 ＋ 分隔 1 ＋ 保存钮 24 ＋ 复制钮 24
         // ＋ 10×8 段间距 ＋ 胶囊水平留白 10×2）；select 态最窄（色/宽/撤销隐藏）≈315，blur 态 ≈364，
-        // 均被保守覆盖；常量保留 482（历史值，全显宽 + 约 45pt 容差）——仅用于面板光标带基底与
-        // 左缘 clamp（偏保守只影响带略宽/clamp 略早，无正确性问题）；实际渲染用右缘 pin + offset，
-        // 不依赖该估算。
+        // 均被保守覆盖；常量保留 482（历史值，全显宽 + 约 45pt 容差）——仅用于锚定初始位置的
+        // 左缘保护与光标带基底（偏保守只影响带略宽/锚点略右，无正确性问题）；实际渲染用右下角
+        // 锚点 pin + offset，不依赖该估算。
         let rowWidth: CGFloat = 482
         let rowHeight: CGFloat = 34
         var right = sel.maxX
@@ -674,20 +687,14 @@ struct SelectionView: View {
         return (right, bottom, row)
     }
 
-    /// 面板展开期间的光标带：主行矩形（含手动拖动偏移）向上扩 60pt（面板 overlay 向上生长、
+    /// 面板展开期间的光标带：主行矩形（含手动拖动的渲染位移）向上扩 60pt（面板 overlay 向上生长、
     /// 几何上常盖住选区，带内一律箭头，不透出选区光标）。无有效选区或面板全收起时为 .zero（不拦光标）。
+    /// drag = 自由位置渲染锚点相对锚定点的位移（锚定跟随 = .zero，见 syncPanelBand 换算）。
     static func panelBand(sel: CGRect?, bounds: CGSize, anyPanelOpen: Bool, drag: CGSize = .zero) -> CGRect {
         guard anyPanelOpen, let sel, SelectionGeometry.isValid(sel) else { return .zero }
         return toolbarRowLayout(sel: sel, bounds: bounds).row
             .offsetBy(dx: drag.width, dy: drag.height)
             .insetBy(dx: 0, dy: -60)
-    }
-
-    /// 工具栏拖动 offset 的屏内 clamp：组矩形（layout.row 估算矩形 + offset）整体保持在屏内，
-    /// 左右 6pt、上下 4pt 边距；区间倒挂（屏极窄/矮容不下组）时取上界——尽量靠右/下。
-    static func clampedToolbarOffset(_ offset: CGSize, row: CGRect, bounds: CGSize) -> CGSize {
-        CGSize(width: min(max(offset.width, 6 - row.minX), bounds.width - 6 - row.maxX),
-               height: min(max(offset.height, 4 - row.minY), bounds.height - 4 - row.maxY))
     }
 
     /// 单一光标决策点：mouseMoved / leftMouseDragged 统一在此判定（cursorRect 已停用）
@@ -885,15 +892,15 @@ private struct CaptureToolbar: View {
     @Binding var showColorPalette: Bool
     @Binding var showWidthPicker: Bool
     @Binding var showRadiusSlider: Bool
-    /// 工具栏手动拖动偏移（nil = 锚定选区右下；背景拖动层手势经此回写，渲染 offset 与 panelBand 消费）
-    @Binding var toolbarOffset: CGSize?
+    /// 工具栏自由位置（nil = 锚定跟随；sel 空间胶囊右下角锚点绝对点，背景拖动层手势经此回写，
+    /// 渲染 offset 与 panelBand 消费；不 clamp 屏缘，@State 每会话重置）
+    @Binding var toolbarPosition: CGPoint?
     /// 工具栏拖动进行中（背景拖动层手势标记；外层 scaleEffect 视觉反馈消费）
     @Binding var toolbarDragging: Bool
-    /// 拖动起始偏移基线（onChanged 首帧从 toolbarOffset 解包，后续帧累加 translation）
-    @Binding var toolbarDragBase: CGSize
-    /// 拖动 clamp 基准：toolbarRowLayout 的 row 估算矩形与屏幕 bounds（clampedToolbarOffset 消费）
-    let clampRow: CGRect
-    let screenBounds: CGSize
+    /// 拖动起始渲染点基线（onChanged 首帧从 toolbarPosition ?? anchor 解包，后续帧累加 translation）
+    @Binding var toolbarDragBase: CGPoint
+    /// 当前锚定点（sel 空间胶囊右下角 = toolbarRowLayout 的 right/bottom；基线解包与吸附判定参照）
+    let anchor: CGPoint
     /// 撤销可用（annotations 非空）：空栈时整钮不渲染（原 40% 置灰删除）
     let canUndo: Bool
     let onUndo: () -> Void
@@ -976,8 +983,9 @@ private struct CaptureToolbar: View {
     /// 透明铺满玻璃块、contentShape 圈住全部像素，拖动非按钮的
     /// 空白像素（钮间隙、padding）即可挪动整块——上层按钮/滑块命中优先、不下落，容器手势
     /// 不再抢占 NSSlider tracking（滑块拖不动的回归修复）。
-    /// onChanged 首帧锁定基线（toolbarOffset nil 视作 .zero）后累加 translation；onEnded 距零 <12pt
-    /// 吸附归位，否则 clamp 屏内（左右 6pt / 上下 4pt）
+    /// onChanged 首帧锁定基线（toolbarPosition nil 视作当时锚定点 anchor——起步零跳变）后累加
+    /// translation；onEnded 落点距锚定点 <12pt → nil 吸附回跟随，否则存绝对位置——
+    /// 不做屏幕 clamp（用户明确不要避让，可拖出屏缘，保持到下次截图会话重置）
     private var dragBackground: some View {
         Color.clear
             .contentShape(Rectangle())
@@ -986,21 +994,21 @@ private struct CaptureToolbar: View {
                     .onChanged { value in
                         if !toolbarDragging {
                             toolbarDragging = true
-                            toolbarDragBase = toolbarOffset ?? .zero
+                            toolbarDragBase = toolbarPosition ?? anchor
                         }
-                        toolbarOffset = CGSize(width: toolbarDragBase.width + value.translation.width,
-                                               height: toolbarDragBase.height + value.translation.height)
+                        toolbarPosition = CGPoint(x: toolbarDragBase.x + value.translation.width,
+                                                  y: toolbarDragBase.y + value.translation.height)
                     }
                     .onEnded { value in
                         toolbarDragging = false
-                        let offset = CGSize(width: toolbarDragBase.width + value.translation.width,
-                                            height: toolbarDragBase.height + value.translation.height)
-                        // 吸附归位：拖回距默认锚定 < 12pt 视为放弃手动位置，回归锚定
-                        if hypot(offset.width, offset.height) < 12 {
-                            toolbarOffset = nil
-                            return
+                        let point = CGPoint(x: toolbarDragBase.x + value.translation.width,
+                                            y: toolbarDragBase.y + value.translation.height)
+                        // 吸附回跟随：落点距当前锚定点 < 12pt 视为放弃自由位置，恢复锚定
+                        if hypot(point.x - anchor.x, point.y - anchor.y) < 12 {
+                            toolbarPosition = nil
+                        } else {
+                            toolbarPosition = point
                         }
-                        toolbarOffset = SelectionView.clampedToolbarOffset(offset, row: clampRow, bounds: screenBounds)
                     }
             )
     }
