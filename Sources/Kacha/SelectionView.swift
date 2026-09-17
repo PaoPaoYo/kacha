@@ -886,6 +886,67 @@ private enum PanelID: String, CaseIterable {
     case style, width, radius
 }
 
+/// 显隐槽（按钮显隐的布局机制）：恒在布局的定宽容器 + **TimelineView 手动逐帧插值宽度**。
+/// 为什么不用 .animation/withAnimation（探针逐帧实证，macOS 26 SDK）：glassEffect 容器丢弃
+/// 跨其边界的动画事务——动画挂玻璃外只得到「容器瞬变 + 内容先反向瞬移 Δ 再弹簧归位」的
+/// 两相错位（用户看到的「先整体移动一截再伸缩」；探针数据：行右缘瞬跳 700→667 再弹回），
+/// 挂玻璃内（含 withAnimation 事务）被整体吞掉直接瞬变。改为 TimelineView(.animation)
+/// 逐帧直接驱动 frame(width:)：每帧真实重排（HStack/玻璃胶囊/锚点复刻层同步），全屏 wrapper
+/// 逐帧右缘钉住——探针标准达标：**右缘恒定 0.00pt、左缘 easeOut 单调伸缩（无过冲）、
+/// 圆角钮等右侧项位移 0.1-0.3pt**。
+/// 内容 trailing 对齐 + clipped（中间态向左溢出裁切）；透明度随宽度渐进（显=淡入 隐=淡出）；
+/// 宽度 ≤0.5 时内容不渲染（clipped 只裁绘制不裁命中，必须 if 移除内容防隐形钮命中残留）。
+/// 插值状态持引用类型类（视图身份重置至多丢一次动画，不会反向）；首帧（lastTarget == nil）
+/// 直接落位不动画（工具栏初现无弹跳）
+private struct RevealSlot<Content: View>: View {
+    /// 目标宽度（0 = 全隐）
+    let target: CGFloat
+    /// 全宽：透明度渐变归一基准（= 展开后的槽宽 33）
+    let fullWidth: CGFloat
+    @ViewBuilder let content: () -> Content
+
+    final class Anim {
+        var lastTarget: CGFloat? = nil
+        var start: CGFloat = 0
+        var began = Date.distantPast
+        var shown: CGFloat = 0
+    }
+    @State private var anim = Anim()
+    /// easeOut 二次曲线（单调无过冲），显/隐同款
+    private let duration: Double = 0.28
+
+    private func current(_ now: Date) -> CGFloat {
+        if anim.lastTarget != target {
+            if anim.lastTarget != nil { anim.start = anim.shown } else { anim.start = target }
+            anim.began = now
+            anim.lastTarget = target
+        }
+        let t = now.timeIntervalSince(anim.began) / duration
+        guard t >= 0, t < 1, anim.start != target else {
+            anim.shown = target
+            return target
+        }
+        let p = 1 - pow(1 - t, 2)
+        let w = anim.start + (target - anim.start) * p
+        anim.shown = w
+        return w
+    }
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            let w = current(timeline.date)
+            ZStack(alignment: .trailing) {
+                if w > 0.5 {
+                    content()
+                        .opacity(Double(min(1, w / fullWidth * 1.6)))
+                }
+            }
+            .frame(width: max(w, 0), height: 24)
+            .clipped()
+        }
+    }
+}
+
 /// 触发钮锚点 preference：[PanelID.rawValue: 胶囊本地空间中点 x]。只由测量复刻层发布
 /// （真实行不发布 → 空默认值 merge 无副作用），在玻璃外上溯（glassEffect 容器会吞噬
 /// 子层 preference 与命名坐标空间上溯，probe 实证）
@@ -997,15 +1058,16 @@ private struct CaptureToolbar: View {
                 panelsHost
             }
             .onPreferenceChange(PanelAnchorKey.self) { panelAnchors = $0 }
-            // 系统级显隐动画：面板开合（transition 见 panelsHost）与按钮显隐（activeTool
-            // 驱动色/宽钮、canUndo 驱动撤销钮，transition .opacity 见 rowContent）。
-            // .animation(value:) 是纯驱动修饰符：不创建容器、不参与命中，玻璃 z 序、拖动层
-            // 挂载与面板浮层宿主结构均不受影响
+            // 系统级显隐动画（仅面板开合）：面板浮层宿主在玻璃之外，其 transition
+            // （.opacity + .move）经这些 .animation(value:) 正常驱动；value: tool 同时驱动
+            // 切工具时的面板收起动画。按钮显隐不走这里——玻璃容器丢弃跨边界动画事务
+            // （见 RevealSlot 注释），由 RevealSlot 的 TimelineView 手动逐帧插值。
+            // .animation(value:) 是纯驱动修饰符：不创建容器、不参与命中，玻璃 z 序、
+            // 拖动层挂载与面板浮层宿主结构均不受影响
             .animation(.snappy, value: showStylePanel)
             .animation(.snappy, value: showWidthPicker)
             .animation(.snappy, value: showRadiusSlider)
             .animation(.snappy, value: tool)
-            .animation(.snappy, value: canUndo)
     }
 
     /// 行内容单一构建源（真实行与测量复刻层共用，几何恒同）：measure = true 时三个
@@ -1023,11 +1085,10 @@ private struct CaptureToolbar: View {
                 ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
                 ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") { tool = .blur }
             }
-            // 按工具自动显隐（显隐槽机制，见 revealSlot/revealSlotWidth；动画由 mainRow 的
-            // .animation(value: tool) 驱动，宽度连续插值、内容 trailing 对齐右缘恒定向左伸缩）：
+            // 按工具自动显隐（显隐槽 RevealSlot，手动逐帧插值——见 RevealSlot 注释）：
             // pen 系显样式钮（色+宽合并面板触发）；select 无绘制参数（槽宽 0 全隐）；
             // blur 显宽钮（双滑块面板触发）
-            revealSlot(width: Self.revealSlotWidth(tool: tool)) {
+            RevealSlot(target: Self.revealSlotWidth(tool: tool), fullWidth: 33) {
                 Group {
                     separator
                     if tool == .blur {
@@ -1041,13 +1102,12 @@ private struct CaptureToolbar: View {
             }
             radiusButton
                 .background { if measure { anchorPublisher(.radius) } }
-            // 撤销：空栈整钮不渲染（原 40% 置灰改为按需显隐；动画由 .animation(value: canUndo) 驱动）
-            if canUndo {
+            // 撤销：空栈整钮不渲染（原 40% 置灰改为按需显隐）；同款显隐槽手动插值伸缩
+            RevealSlot(target: canUndo ? 33 : 0, fullWidth: 33) {
                 Group {
                     separator
                     ToolbarIconButton(symbol: "arrow.uturn.backward", selected: false, accessibilityLabel: "撤销", action: onUndo)
                 }
-                .transition(.opacity)
             }
             separator
             // 动作钮：与其他钮统一 24×24 无底色纯图标规格（无选中态），accessibilityLabel 保可读性
@@ -1066,24 +1126,6 @@ private struct CaptureToolbar: View {
     /// pen 系（样式钮）与 blur（宽钮）同为 33；select = 0（全隐）
     private static func revealSlotWidth(tool: AnnotationTool) -> CGFloat {
         tool == .select ? 0 : 1 + 8 + 24
-    }
-
-    /// 显隐槽（按钮显隐的布局机制）：**恒在布局的定宽容器**——宽度经 .animation(value: tool)
-    /// 连续插值，无结构增删的布局跳变（结构增删下布局第一帧即时重排、存活视图弹簧插值随后，
-    /// 两相错位呈「整体先瞬移一截再向右展开」）。宽度是唯一动画量：内容 trailing 对齐 + clipped，
-    /// 宽度中间态内容贴槽右缘恒定、槽左缘平滑伸缩 = 「右缘固定、向左展开/收缩」（圆角钮及
-    /// 右侧全部钮、行右缘全程不动）。
-    /// 槽宽 0 时内容不渲染（clipped 只裁绘制不裁命中，必须 if 移除内容防隐形钮命中残留）；
-    /// 中间态内容超宽溢出向左被裁切（钮 frame 24 硬约束不被压缩）
-    private func revealSlot<Content: View>(width: CGFloat, @ViewBuilder content: () -> Content) -> some View {
-        ZStack(alignment: .trailing) {
-            if width > 0 {
-                content()
-                    .transition(.opacity)
-            }
-        }
-        .frame(width: width, height: 24)
-        .clipped()
     }
 
     /// 背景拖动层（挂 mainRow 的 .background、且必须挂 .glassEffect 之前——顺序语义见
