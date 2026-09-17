@@ -112,6 +112,13 @@ struct SelectionView: View {
         .onChange(of: activeTool) { _, new in
             // 光标快照同步（引用实例，monitor 每次读到最新值）
             cursorState.tool = new
+            // 切工具必收面板：残留开启的面板跨工具存活时，新工具触发钮的互斥会把刚点开的
+            // 目标面板立即关掉（blur 态宽度面板「点一次没反应」的根因），且面板渲染门槛
+            // 镜像触发钮显隐——工具切换后面板理应随之消失。
+            // 收起动画由 CaptureToolbar mainRow 的 .animation(value:) 驱动，无需 withAnimation
+            showColorPalette = false
+            showWidthPicker = false
+            showRadiusSlider = false
         }
         .onChange(of: geo.size.height) { _, new in
             cursorState.viewHeight = new
@@ -872,8 +879,8 @@ private struct ToolbarIconButton: View {
     }
 }
 
-/// 弹出面板标识（锚点 preference 的 key）
-private enum PanelID: String {
+/// 弹出面板标识（锚点 preference 的 key；互斥开关按其寻址）
+private enum PanelID: String, CaseIterable {
     case color, width, radius
 }
 
@@ -890,11 +897,12 @@ private struct PanelAnchorKey: PreferenceKey {
 /// 选区右下角单行工具栏（整体液态玻璃胶囊 ~34pt + 收起式弹出面板）：
 /// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细]（按工具显隐）[圆角] ‖ [撤销]（空栈隐藏）‖ [保存][复制]。
 /// 视觉重构：整行包进单一 glassEffect(in: Capsule())（左右留白 10 / 上下 5，高 24+10=34），
-/// 钮全部无底色。色板/粗细/圆角面板为独立玻璃胶囊，浮于触发钮正上方、间隙 4pt、可盖选区、
-/// 不占布局——但不再挂触发钮 overlay：glassEffect 容器裁剪超出胶囊边界的命中（面板点不中/
-/// 滑块拖不动的回归根因，probe 实证），改挂玻璃外面板浮层宿主（panelsHost），经玻璃外测量
-/// 复刻层上报的锚点复现原锚定几何（命中与视觉严格一致）。互斥至多展开一个：色/粗细选中
-/// 即收起，圆角拖动不收起（再点圆角钮收起）。
+/// 钮全部无底色。色板/粗细/圆角面板为独立玻璃胶囊，浮于触发钮正上方、统一间隙 16pt
+/// （四面板一个 slot 常量，含 blur 双滑块）、可盖选区、不占布局——但不再挂触发钮 overlay：
+/// glassEffect 容器裁剪超出胶囊边界的命中（面板点不中/滑块拖不动的回归根因，probe 实证），
+/// 改挂玻璃外面板浮层宿主（panelsHost），经玻璃外测量复刻层上报的锚点复现原锚定几何
+/// （命中与视觉严格一致）。互斥至多展开一个，开合带系统动画（opacity + 底部滑入，
+/// 见 panelsHost/mainRow）：色/粗细选中即收起，圆角拖动不收起（再点圆角钮收起）。
 /// 拖动走玻璃块背景拖动层（拖非按钮的空白像素；按钮/滑块命中优先、不下落，Slider tracking 不被抢占）；
 /// 色/宽钮按工具自动显隐：select 无绘制参数全隐，blur 无颜色语义（色钮隐、宽度钮=双滑块触发），
 /// arrow/rect/ellipse/pen 全显。
@@ -925,11 +933,10 @@ private struct CaptureToolbar: View {
     let onSave: () -> Void
     let onCopy: () -> Void
 
-    /// 面板锚定偏移（锚定槽 overlay alignment .bottom 上再 offset）：钮半高 12 ＋ 面板半高 12
-    /// ＋ 间隙 4 → 面板底缘贴钮顶上方 4pt
-    private let panelAnchorOffset: CGFloat = -(12 + 24 / 2 + 4)
-    /// 模糊双滑块面板锚定偏移：面板高自适应 ~48（半高 24），同式保持 4pt 间隙
-    private let blurPanelAnchorOffset: CGFloat = -(12 + 48 / 2 + 4)
+    /// 面板锚定偏移（锚定槽 overlay alignment .bottom 上再 offset，四个面板统一一个 slot）：
+    /// 钮高 24 ＋ 统一间隙 16 → 面板底缘贴钮顶上方 16pt。原普通面板 4pt 过紧（用户要求留出
+    /// 可见间距），blur 双滑块面板本就是 -40（间隙 16）——两常量合一，面板底缘同高对齐
+    private let panelAnchorOffset: CGFloat = -(24 + 16)
     /// 触发钮锚点（测量复刻层上报，胶囊本地空间中点 x；key = PanelID.rawValue）——
     /// 面板浮层宿主定位消费。锚点经玻璃外 preference 送达（玻璃内上报会被容器吞噬）
     @State private var panelAnchors: [String: CGFloat] = [:]
@@ -986,6 +993,15 @@ private struct CaptureToolbar: View {
                 panelsHost
             }
             .onPreferenceChange(PanelAnchorKey.self) { panelAnchors = $0 }
+            // 系统级显隐动画：面板开合（transition 见 panelsHost）与按钮显隐（activeTool
+            // 驱动色/宽钮、canUndo 驱动撤销钮，transition .opacity 见 rowContent）。
+            // .animation(value:) 是纯驱动修饰符：不创建容器、不参与命中，玻璃 z 序、拖动层
+            // 挂载与面板浮层宿主结构均不受影响
+            .animation(.snappy, value: showColorPalette)
+            .animation(.snappy, value: showWidthPicker)
+            .animation(.snappy, value: showRadiusSlider)
+            .animation(.snappy, value: tool)
+            .animation(.snappy, value: canUndo)
     }
 
     /// 行内容单一构建源（真实行与测量复刻层共用，几何恒同）：measure = true 时三个
@@ -1003,25 +1019,35 @@ private struct CaptureToolbar: View {
                 ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
                 ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") { tool = .blur }
             }
-            // 按工具自动显隐：色/宽钮仅标注绘制工具（arrow/rect/ellipse/pen）显示；
+            // 按工具自动显隐（动画由 mainRow 的 .animation(value: activeTool) 驱动，淡入淡出）：
+            // 色/宽钮仅标注绘制工具（arrow/rect/ellipse/pen）显示；
             // select 无绘制参数（均隐藏）；blur 无颜色语义但宽度在双滑块面板——宽度钮保留为面板触发
             if tool != .select && tool != .blur {
-                separator
-                currentColorButton
-                    .background { if measure { anchorPublisher(.color) } }
-                currentWidthButton
-                    .background { if measure { anchorPublisher(.width) } }
+                Group {
+                    separator
+                    currentColorButton
+                        .background { if measure { anchorPublisher(.color) } }
+                    currentWidthButton
+                        .background { if measure { anchorPublisher(.width) } }
+                }
+                .transition(.opacity)
             } else if tool == .blur {
-                separator
-                currentWidthButton
-                    .background { if measure { anchorPublisher(.width) } }
+                Group {
+                    separator
+                    currentWidthButton
+                        .background { if measure { anchorPublisher(.width) } }
+                }
+                .transition(.opacity)
             }
             radiusButton
                 .background { if measure { anchorPublisher(.radius) } }
-            // 撤销：空栈整钮不渲染（原 40% 置灰改为按需显隐）
+            // 撤销：空栈整钮不渲染（原 40% 置灰改为按需显隐；动画由 .animation(value: canUndo) 驱动）
             if canUndo {
-                separator
-                ToolbarIconButton(symbol: "arrow.uturn.backward", selected: false, accessibilityLabel: "撤销", action: onUndo)
+                Group {
+                    separator
+                    ToolbarIconButton(symbol: "arrow.uturn.backward", selected: false, accessibilityLabel: "撤销", action: onUndo)
+                }
+                .transition(.opacity)
             }
             separator
             // 动作钮：与其他钮统一 24×24 无底色纯图标规格（无选中态），accessibilityLabel 保可读性
@@ -1076,7 +1102,7 @@ private struct CaptureToolbar: View {
     /// 改经 panelsHost 锚定槽浮于钮正上方（视觉与命中同几何）
     private var currentColorButton: some View {
         Button {
-            togglePanel { showColorPalette.toggle() }
+            togglePanel(.color)
         } label: {
             colorDot(color)
                 .frame(width: 24, height: 24)
@@ -1090,7 +1116,7 @@ private struct CaptureToolbar: View {
     /// 面板同样改挂 panelsHost（玻璃外），命中不再被裁剪
     private var currentWidthButton: some View {
         Button {
-            togglePanel { showWidthPicker.toggle() }
+            togglePanel(.width)
         } label: {
             Circle()
                 .fill(Color.primary)
@@ -1130,7 +1156,7 @@ private struct CaptureToolbar: View {
     /// 面板同样改挂 panelsHost（玻璃外）
     private var radiusButton: some View {
         Button {
-            togglePanel { showRadiusSlider.toggle() }
+            togglePanel(.radius)
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "rectangle.roundedtop")
@@ -1166,6 +1192,7 @@ private struct CaptureToolbar: View {
                     }
                     .offset(y: panelAnchorOffset)
                 }
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
             if showWidthPicker, tool != .select,
                let anchorX = panelAnchors[PanelID.width.rawValue] {
@@ -1174,8 +1201,9 @@ private struct CaptureToolbar: View {
                         panelCapsuleAdaptive {
                             blurSliderPanel
                         }
-                        .offset(y: blurPanelAnchorOffset)
+                        .offset(y: panelAnchorOffset)
                     }
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
                 } else {
                     panelSlot(anchorX: anchorX) {
                         panelCapsule {
@@ -1187,6 +1215,7 @@ private struct CaptureToolbar: View {
                         }
                         .offset(y: panelAnchorOffset)
                     }
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
             }
             if showRadiusSlider, let anchorX = panelAnchors[PanelID.radius.rawValue] {
@@ -1203,6 +1232,7 @@ private struct CaptureToolbar: View {
                     }
                     .offset(y: panelAnchorOffset)
                 }
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
     }
@@ -1232,12 +1262,36 @@ private struct CaptureToolbar: View {
 
     // MARK: 弹出面板（互斥）
 
-    /// 面板互斥开关：先执行目标开关取反，再把展开中的其他面板全部关掉
-    private func togglePanel(_ target: () -> Void) {
-        target()
-        if showColorPalette { showWidthPicker = false; showRadiusSlider = false }
-        if showWidthPicker { showColorPalette = false; showRadiusSlider = false }
-        if showRadiusSlider { showColorPalette = false; showWidthPicker = false }
+    /// 面板互斥开关（**一步切到目标**）：目标已开 → 仅收起目标；目标未开 → 无条件关掉其余
+    /// 面板并开目标。旧实现（先 toggle 目标、再按「当前哪些面板开着」顺序互斥）在其他面板
+    /// 残留开启时会把刚打开的目标立即关掉——色板残留时点宽度钮「点一次没反应、再点才开」
+    /// 的根因；配合切工具全收面板（SelectionView 的 onChange(of: activeTool)）双保险
+    private func togglePanel(_ id: PanelID) {
+        if isOpen(id) {
+            setPanel(id, false)
+        } else {
+            for other in PanelID.allCases where other != id {
+                setPanel(other, false)
+            }
+            setPanel(id, true)
+        }
+    }
+
+    /// 面板开关的读取/写入单一出口（互斥逻辑经 PanelID 寻址，不写三份 if）
+    private func isOpen(_ id: PanelID) -> Bool {
+        switch id {
+        case .color: showColorPalette
+        case .width: showWidthPicker
+        case .radius: showRadiusSlider
+        }
+    }
+
+    private func setPanel(_ id: PanelID, _ value: Bool) {
+        switch id {
+        case .color: showColorPalette = value
+        case .width: showWidthPicker = value
+        case .radius: showRadiusSlider = value
+        }
     }
 
     /// 面板容器：玻璃胶囊（高 24，水平内边距 10）
