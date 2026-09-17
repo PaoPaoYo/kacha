@@ -68,292 +68,83 @@ struct SelectionView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let sel = activeSelection
+            overlayRoot(in: geo)
+        }
+    }
 
-            ZStack(alignment: .topLeading) {
-                Image(nsImage: NSImage(cgImage: frame.image, size: frame.screenPointSize))
-                    .resizable()
-                    .frame(width: geo.size.width, height: geo.size.height)
+    /// 主画布（层级 ZStack + 状态同步修饰符）。body 的修饰符链拆成 root/canvas 两段方法：
+    /// 整条链写在一个表达式会触发编译器「unable to type-check in reasonable time」
+    private func overlayCanvas(in geo: GeometryProxy) -> some View {
+        ZStack(alignment: .topLeading) {
+            Image(nsImage: NSImage(cgImage: frame.image, size: frame.screenPointSize))
+                .resizable()
+                .frame(width: geo.size.width, height: geo.size.height)
 
-                let maskSelection = validDragRect ?? ((phase != .adjusting) ? hoveredWindow : nil)
-                // 挖洞圆角跟随 cornerRadius（拖拽/调整态含 @AppStorage 记忆值），与白边及最终输出一致（所见即所得）；悬停窗口洞保持直角
-                DimmingMask(selection: maskSelection, cornerRadius: validDragRect != nil ? cornerRadius : 0)
-                    .fill(.black.opacity(0.35), style: FillStyle(eoFill: true))
-                    .allowsHitTesting(false)
+            let maskSelection = validDragRect ?? ((phase != .adjusting) ? hoveredWindow : nil)
+            dimmingAndHoverLayers(
+                maskSelection: maskSelection,
+                maskCornerRadius: validDragRect != nil ? cornerRadius : 0,
+                hoverWindow: (phase != .adjusting && validDragRect == nil) ? hoveredWindow : nil)
 
-                if let hw = hoveredWindow, phase != .adjusting, validDragRect == nil {
-                    Rectangle()
-                        .strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
-                        .frame(width: hw.width, height: hw.height)
-                        .position(x: hw.midX, y: hw.midY)
-                        .allowsHitTesting(false)
-                }
-
-                if let sel, SelectionGeometry.isValid(sel) {
-                    // 白边随圆角实时变化：拖拽/调整态跟随 cornerRadius（含 @AppStorage 记忆值），与挖洞及最终输出一致（所见即所得，共用一处）
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .strokeBorder(.white, lineWidth: 1)
-                        .frame(width: sel.width, height: sel.height)
-                        .position(x: sel.midX, y: sel.midY)
-                        .allowsHitTesting(false)
-
-                    // 标注实时渲染（含进行中的一笔）：屏幕预览与 AnnotationRenderer 像素合成同构
-                    // （共用 AnnotationGeometry.path；线帽/线接 round 一致，arrow = 整体 stroke + eoFill 头，
-                    // blur = clip 路径展宽 + 底图选区裁剪高斯模糊）。
-                    // 渲染在白边之后、move/绘制手势层之前；仅预览层不做命中（allowsHitTesting false）。
-                    // 白色标注先 stroke 1pt separator 外扩描边再上色，浅色截图中仍可见（规格约束，仅预览层）。
-                    Canvas { context, _ in
-                        for a in annotations + [drawingAnnotation].compactMap({ $0 }) {
-                            var ctx = context
-                            // path 产出选区局部坐标（原点 = 视图原点），Canvas 原点 = sel.minX：平移对齐
-                            ctx.translateBy(x: -sel.minX, y: -sel.minY)
-                            let path = Path(AnnotationGeometry.path(for: a.kind, in: sel, lineWidth: a.lineWidth))
-                            if case let .blur(_, radius) = a.kind {
-                                // 高斯模糊：涂抹路径展宽为 clip，冻结帧按选区裁剪、CIGaussianBlur（每笔 radius × 像素比）
-                                // 后 1:1 绘制（与 AnnotationRenderer 输出同构；颜色不参与渲染，坐标为视图坐标 → 画到 sel）
-                                if let blurred = blurPreviewImage(in: sel, radius: radius) {
-                                    ctx.clip(to: path.strokedPath(StrokeStyle(lineWidth: a.lineWidth,
-                                                                              lineCap: .round, lineJoin: .round)))
-                                    ctx.draw(Image(decorative: blurred, scale: 1), in: sel)
-                                }
-                                continue
-                            }
-                            let color = Color(red: a.color.r, green: a.color.g, blue: a.color.b, opacity: a.color.a)
-                            if a.color == .white {
-                                ctx.stroke(path, with: .color(Color(nsColor: .separatorColor)),
-                                           style: StrokeStyle(lineWidth: a.lineWidth + 2, lineCap: .round, lineJoin: .round))
-                            }
-                            ctx.stroke(path, with: .color(color),
-                                       style: StrokeStyle(lineWidth: a.lineWidth, lineCap: .round, lineJoin: .round))
-                            if case .arrow = a.kind {
-                                // 线段子路径零面积对 eoFill 无副作用，与 Renderer 同构（stroke 后 fill 成实心头）
-                                ctx.fill(path, with: .color(color), style: FillStyle(eoFill: true))
-                            }
-                        }
-                    }
-                    .frame(width: sel.width, height: sel.height)
-                    .position(x: sel.midX, y: sel.midY)
-                    .allowsHitTesting(false)
-
-                    SizeBadge(rect: sel)
-                        .position(x: min(sel.midX, geo.size.width - 60),
-                                  y: max(sel.minY - 28, 26))
-                        .allowsHitTesting(false)
-
-                    if phase == .adjusting {
-                        // 选区内：拖动整体移动 + 双击确认。
-                        // 命中泄漏根因：contentShape 必须放在 position 之前——position 把子视图包进
-                        // 「占满全部可用空间」的定位容器（bounds = 整个 ZStack = 整屏），contentShape
-                        // 挂在其后定义的命中形状就是容器全屏 bounds，遮罩区远处的拖动也能触发 move
-                        // （自 V2 潜伏；挂在其前，命中形状 = 选区尺寸的子视图本身）
-                        Color.clear
-                            .frame(width: sel.width, height: sel.height)
-                            .contentShape(Rectangle())
-                            .position(x: sel.midX, y: sel.midY)
-                            .gesture(
-                                DragGesture(minimumDistance: 1, coordinateSpace: .named("sel"))
-                                    .onChanged { value in
-                                        // 双保险（防御层）：只有起点在选区内（±2pt 容差）才允许开始移动；
-                                        // 只在起始判定（adjustKind == nil）时检查——移动中 selection 随拖拽
-                                        // 平移，起点相对「当前选区」无参照意义，逐帧复查会把正常长拖误杀
-                                        if adjustKind == nil {
-                                            guard selection.insetBy(dx: -2, dy: -2).contains(value.startLocation) else { return }
-                                            beginAdjust(.move, at: value.startLocation)
-                                        }
-                                        updateAdjust(to: value.location, in: geo.size)
-                                    }
-                                    .onEnded { value in
-                                        // 同源防御：起点在选区外的手势结束不触碰状态（其开始已被 onChanged 拦截）；
-                                        // 本层自己的 .move 结束照常清 adjustKind（不按已平移的当前选区复查起点）
-                                        if adjustKind == .move || selection.insetBy(dx: -2, dy: -2).contains(value.startLocation) {
-                                            adjustKind = nil
-                                        }
-                                    }
-                            )
-                            .onTapGesture(count: 2) { confirm() }
-
-                        // 8 个缩放手柄（四角 + 四边中点）
-                        HandleLayer(selection: sel)
-                            .environment(\.adjustStarter) { kind, point in
-                                beginAdjust(kind, at: point)
-                            }
-                            .environment(\.adjustUpdater) { point in
-                                updateAdjust(to: point, in: geo.size)
-                            }
-                            .environment(\.adjustEnder) { adjustKind = nil }
-
-                        // 标注绘制层：工具激活时渲染在 move 层/手柄之上——后渲染覆盖命中，
-                        // move/边/角手势让位（双击确认随之失效，回车/按钮/右键仍可用）；
-                        // 「选择」工具时本层不存在，恢复 move/手柄/双击现状。
-                        // minimumDistance 0：原地点击也走 onChanged/onEnded（点一下的无效小标注由 isValid 丢弃）
-                        if activeTool.takesOverDrag {
-                            // 绘制层与 move 层同型泄漏：contentShape 同样移到 position 之前，
-                            // 命中限定在选区尺寸内（否则绘制工具激活时遮罩区拖动会喂进 updateDrawing）
-                            Color.clear
-                                .frame(width: sel.width, height: sel.height)
-                                .contentShape(Rectangle())
-                                .position(x: sel.midX, y: sel.midY)
-                                .gesture(
-                                    DragGesture(minimumDistance: 0, coordinateSpace: .named("sel"))
-                                        .onChanged { value in
-                                            updateDrawing(to: value.location, start: value.startLocation, in: sel)
-                                        }
-                                        .onEnded { _ in commitDrawing(in: sel) }
-                                )
-                        }
-
-                        // 选区右下角单行工具栏（紧贴选区，可整块拖动挪开）：
-                        // [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]；
-                        // 色板/粗细/圆角面板为触发钮 overlay（浮于钮正上方、可盖选区、不占布局）。
-                        // 整组布局（右缘锚点 / 底缘 / clamp / 面板光标带基底）见 toolbarRowLayout 单一公式源；
-                        // 拖动遮挡选区时手动挪开：minimumDistance 2 保证钮点击（无位移按下抬起）正常触发
-                        let group = Self.toolbarRowLayout(sel: sel, bounds: geo.size)
-                        let toolbarDrag = toolbarOffset ?? .zero
-                        CaptureToolbar(tool: $activeTool,
-                                       color: $annotationColor,
-                                       lineWidth: $annotationWidth,
-                                       cornerRadius: $cornerRadius,
-                                       blurRadius: $blurRadius,
-                                       blurPenWidth: $blurPenWidth,
-                                       showColorPalette: $showColorPalette,
-                                       showWidthPicker: $showWidthPicker,
-                                       showRadiusSlider: $showRadiusSlider,
-                                       canUndo: !annotations.isEmpty,
-                                       onUndo: undoLastAnnotation,
-                                       onSave: save,
-                                       onCopy: confirm)
-                        // 整块拖动：contentShape 让胶囊留白/间隙也命中；子级 Button 优先（.gesture 非高优先），
-                        // 无位移点击不受影响；拖动中轻微放大反馈。不加 hover 光标——applyCursor monitor 的
-                        // mouseMoved arrow 兜底会覆盖 onHover 设置，保持 arrow（macOS 工具栏惯例）
-                        .contentShape(Rectangle())
-                        .scaleEffect(toolbarDragging ? 1.02 : 1)
-                        .gesture(
-                            DragGesture(minimumDistance: 2, coordinateSpace: .named("sel"))
-                                .onChanged { value in
-                                    if !toolbarDragging {
-                                        toolbarDragging = true
-                                        toolbarDragBase = toolbarOffset ?? .zero
-                                    }
-                                    toolbarOffset = CGSize(width: toolbarDragBase.width + value.translation.width,
-                                                           height: toolbarDragBase.height + value.translation.height)
-                                }
-                                .onEnded { value in
-                                    toolbarDragging = false
-                                    let offset = CGSize(width: toolbarDragBase.width + value.translation.width,
-                                                        height: toolbarDragBase.height + value.translation.height)
-                                    // 吸附归位：拖回距默认锚定 < 12pt 视为放弃手动位置，回归锚定
-                                    if hypot(offset.width, offset.height) < 12 {
-                                        toolbarOffset = nil
-                                        return
-                                    }
-                                    toolbarOffset = Self.clampedToolbarOffset(offset, row: group.row, bounds: geo.size)
-                                }
-                        )
-                        // 组右缘/底缘先 pin 到屏右屏底、再 offset 到锚点 + 手动拖动偏移：右对齐不依赖行宽；
-                        // 底缘锚定主行——面板展开向上生长，不推挤主行（主行不跳动）
-                        .frame(width: geo.size.width, height: geo.size.height,
-                               alignment: Alignment(horizontal: .trailing, vertical: .bottom))
-                        .offset(x: group.right - geo.size.width + toolbarDrag.width,
-                                y: group.bottom - geo.size.height + toolbarDrag.height)
-                    }
-                }
+            if let sel = activeSelection, SelectionGeometry.isValid(sel) {
+                selectionLayers(in: geo, sel: sel)
             }
+        }
+        .onChange(of: selection) { _, new in
+            // 面板展开光标带与渲染 offset 用同一公式（toolbarRowLayout 行矩形，含手动拖动偏移）
+            syncSelectionState(new: new, bounds: geo.size)
+        }
+        .onChange(of: showColorPalette || showWidthPicker || showRadiusSlider) { _, _ in
+            // 面板展开/收起源同步：任一面板开 → 行矩形向上扩 60pt 光标带，全收起 → .zero
+            syncPanelBand(sel: selection, bounds: geo.size)
+        }
+        .onChange(of: toolbarOffset) { _, _ in
+            // 工具栏拖动源同步：光标带跟随含偏移的最终组矩形（拖动中逐帧更新）
+            syncPanelBand(sel: selection, bounds: geo.size)
+        }
+        .onChange(of: blurPenWidth) { _, new in
+            // blur 笔刷光标直径源同步（实时跟随滑块；blurRadius 不影响光标）
+            cursorState.blurWidth = CGFloat(new)
+        }
+        .onChange(of: activeTool) { _, new in
+            // 光标快照同步（引用实例，monitor 每次读到最新值）
+            cursorState.tool = new
+        }
+        .onChange(of: geo.size.height) { _, new in
+            cursorState.viewHeight = new
+        }
+    }
+
+    /// 交互外挂（坐标空间 / 悬停 / 手势 / 按键 / 生命周期），叠在 overlayCanvas 之上
+    private func overlayRoot(in geo: GeometryProxy) -> some View {
+        overlayCanvas(in: geo)
             .coordinateSpace(name: "sel")
             .onContinuousHover(coordinateSpace: .named("sel")) { hoverPhase in
-                // 仅 idle 更新：按下进入 .dragging 后保持旧值，松手时窗口分支据此判定点击目标；
+                // 悬停高亮：仅 idle 更新（按下进入 .dragging 后保持旧值，松手时窗口分支据此判定点击目标）；
                 // ended（移出视图）一律清空
-                switch hoverPhase {
-                case .active(let point):
-                    if phase == .idle {
-                        hoveredWindow = WindowGeometry.hitTest(point: point, windows: windows)
-                    }
-                case .ended:
-                    hoveredWindow = nil
+                if case .active(let point) = hoverPhase {
+                    hoverActive(at: point)
+                } else {
+                    hoverEnded()
                 }
             }
             .contentShape(Rectangle())
-            .gesture(
-                // 空白处按下拖拽：画新选区（minimumDistance 0：原地点击也走 onEnded）
-                DragGesture(minimumDistance: 0, coordinateSpace: .named("sel"))
-                    .onChanged { value in
-                        // 调整态：父层（空白重画）手势完全禁用——选区内/外起点都忽略，重画只能从 idle/dragging 起步；
-                        // 子层（move/手柄/按钮）手势独立跟踪不受影响，dragStart 也不会被父层污染
-                        if phase == .adjusting { return }
-                        phase = .dragging
-                        dragStart = value.startLocation
-                        dragCurrent = value.location
-                    }
-                    .onEnded { value in
-                        // 调整态：同 onChanged 全部忽略（选区外拖动什么也不做）
-                        if phase == .adjusting { return }
-                        defer { dragStart = nil; dragCurrent = nil }
-                        let rect = SelectionGeometry.normalize(from: value.startLocation, to: value.location)
-                        if SelectionGeometry.isValid(rect) {
-                            selection = rect
-                            phase = .adjusting
-                        } else if let hw = hoveredWindow, phase != .adjusting {
-                            // 点击窗口：以窗口矩形为选区进入调整态（dragStart/dragCurrent 由 defer 清空，
-                            // 满足 confirm 的 dragStart == nil 守卫）
-                            selection = hw
-                            phase = .adjusting
-                        } else {
-                            // 点击空白：无操作（不取消，用户要求移除 V1 误触取消）；
-                            // phase 回落 idle，悬停高亮/窗口点击继续可用
-                            phase = .idle
-                        }
-                    }
-            )
+            .gesture(blankRedrawGesture)
             .focusable()
-            .onChange(of: selection) { _, new in
-                cursorState.selection = new
-                cursorState.hasSelection = SelectionGeometry.isValid(new)
-                // 面板展开光标带与渲染 offset 用同一公式（toolbarRowLayout 行矩形，含手动拖动偏移）；
-                // 选区源同步（面板全收起时为 .zero）
-                cursorState.panelBand = Self.panelBand(
-                    sel: new, bounds: geo.size,
-                    anyPanelOpen: showColorPalette || showWidthPicker || showRadiusSlider,
-                    drag: toolbarOffset ?? .zero)
-            }
-            .onChange(of: showColorPalette || showWidthPicker || showRadiusSlider) { _, open in
-                // 面板展开/收起源同步：任一面板开 → 行矩形向上扩 60pt 光标带，全收起 → .zero
-                cursorState.panelBand = Self.panelBand(sel: selection, bounds: geo.size, anyPanelOpen: open,
-                                                       drag: toolbarOffset ?? .zero)
-            }
-            .onChange(of: toolbarOffset) { _, new in
-                // 工具栏拖动源同步：光标带跟随含偏移的最终组矩形（拖动中逐帧更新）
-                cursorState.panelBand = Self.panelBand(
-                    sel: selection, bounds: geo.size,
-                    anyPanelOpen: showColorPalette || showWidthPicker || showRadiusSlider,
-                    drag: new ?? .zero)
-            }
-            .onChange(of: blurPenWidth) { _, new in
-                // blur 笔刷光标直径源同步（实时跟随滑块；blurRadius 不影响光标）
-                cursorState.blurWidth = CGFloat(new)
-            }
-            .onChange(of: activeTool) { _, new in
-                // 光标快照同步（引用实例，monitor 每次读到最新值）：绘制工具激活 → 选区内统一十字
-                cursorState.tool = new
-            }
-            .onChange(of: geo.size.height) { _, new in
-                cursorState.viewHeight = new
-            }
             .onKeyPress(.return) {
                 confirm()
                 return .handled
             }
-            .onExitCommand(perform: onCancel)
-            .onAppear {
-                // 光标快照初始化 + 安装单一决策点 monitor（替代 cursorRect / onHover 方案）
-                cursorState.viewHeight = geo.size.height
-                cursorState.selection = selection
-                cursorState.hasSelection = SelectionGeometry.isValid(selection)
-                cursorState.tool = activeTool
-                cursorState.blurWidth = CGFloat(blurPenWidth)
-                cursorMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { event in
-                    Self.applyCursor(event: event, state: cursorState, screen: frame.screen)
-                    return event
-                }
+            .onKeyPress("z", phases: [.down, .repeat]) { press in
+                // ⌘Z 撤销最后一笔标注：SDK 的 onKeyPress 无 modifiers 入参变体（接口只有
+                // key/keys/characters/phases 五种重载），⌘ 修饰键在闭包内手动判定；
+                // 非 ⌘ 的 z 放行（.ignored）。undoLastAnnotation 自带空栈守卫，空栈 no-op 仍吞键
+                guard press.modifiers.contains(.command) else { return .ignored }
+                undoLastAnnotation()
+                return .handled
             }
+            .onExitCommand(perform: onCancel)
+            .onAppear { installCursorState(height: geo.size.height) }
             .onReceive(NotificationCenter.default.publisher(for: .kachaOverlayDismissed)) { _ in
                 // 覆盖窗被 dismissAll 关闭时立即清 monitor（防泄漏）；onDisappear 仅作兜底
                 removeCursorMonitor()
@@ -361,6 +152,97 @@ struct SelectionView: View {
             .onDisappear {
                 removeCursorMonitor()
             }
+    }
+
+    /// selection onChange 源同步：光标快照 + 面板光标带（一行公式源见 panelBand）
+    private func syncSelectionState(new: CGRect, bounds: CGSize) {
+        cursorState.selection = new
+        cursorState.hasSelection = SelectionGeometry.isValid(new)
+        syncPanelBand(sel: new, bounds: bounds)
+    }
+
+    // MARK: 交互辅助（从 body 修饰链拆出：表达式过大触发编译器「unable to type-check in reasonable time」）
+
+    /// 遮罩挖洞 + idle 悬停窗口蓝描边。挖洞圆角由调用方传入（拖拽/调整态跟随 cornerRadius、
+    /// 与白边及最终输出一致所见即所得；悬停窗口洞保持直角即 0）
+    @ViewBuilder
+    private func dimmingAndHoverLayers(maskSelection: CGRect?, maskCornerRadius: CGFloat, hoverWindow: CGRect?) -> some View {
+        DimmingMask(selection: maskSelection, cornerRadius: maskCornerRadius)
+            .fill(.black.opacity(0.35), style: FillStyle(eoFill: true))
+            .allowsHitTesting(false)
+
+        if let hoverWindow {
+            Rectangle()
+                .strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
+                .frame(width: hoverWindow.width, height: hoverWindow.height)
+                .position(x: hoverWindow.midX, y: hoverWindow.midY)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// 悬停命中窗口（仅 idle 态更新；dragging/adjusting 保持旧值，松手时窗口分支据此判定点击目标）
+    private func hoverActive(at point: CGPoint) {
+        if phase == .idle {
+            hoveredWindow = WindowGeometry.hitTest(point: point, windows: windows)
+        }
+    }
+
+    /// 指针移出视图：悬停高亮清空
+    private func hoverEnded() {
+        hoveredWindow = nil
+    }
+
+    /// 空白处按下拖拽：画新选区（minimumDistance 0：原地点击也走 onEnded）。
+    /// 调整态完全禁用——选区内/外起点都忽略，重画只能从 idle/dragging 起步；
+    /// 子层（move/手柄/按钮）手势独立跟踪不受影响，dragStart 也不会被父层污染
+    private var blankRedrawGesture: some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named("sel"))
+            .onChanged { value in
+                if phase == .adjusting { return }
+                phase = .dragging
+                dragStart = value.startLocation
+                dragCurrent = value.location
+            }
+            .onEnded { value in
+                // 调整态：同 onChanged 全部忽略（选区外拖动什么也不做）
+                if phase == .adjusting { return }
+                defer { dragStart = nil; dragCurrent = nil }
+                let rect = SelectionGeometry.normalize(from: value.startLocation, to: value.location)
+                if SelectionGeometry.isValid(rect) {
+                    selection = rect
+                    phase = .adjusting
+                } else if let hw = hoveredWindow, phase != .adjusting {
+                    // 点击窗口：以窗口矩形为选区进入调整态（dragStart/dragCurrent 由 defer 清空，
+                    // 满足 confirm 的 dragStart == nil 守卫）
+                    selection = hw
+                    phase = .adjusting
+                } else {
+                    // 点击空白：无操作（不取消，用户要求移除 V1 误触取消）；
+                    // phase 回落 idle，悬停高亮/窗口点击继续可用
+                    phase = .idle
+                }
+            }
+    }
+
+    /// 面板展开光标带同步（selection / 面板开关 / toolbarOffset 三类 onChange 源共用）；
+    /// 面板全收起时 panelBand 公式自回 .zero
+    private func syncPanelBand(sel: CGRect?, bounds: CGSize) {
+        cursorState.panelBand = Self.panelBand(
+            sel: sel, bounds: bounds,
+            anyPanelOpen: showColorPalette || showWidthPicker || showRadiusSlider,
+            drag: toolbarOffset ?? .zero)
+    }
+
+    /// 光标快照初始化 + 安装单一决策点 monitor（替代 cursorRect / onHover 方案）
+    private func installCursorState(height: CGFloat) {
+        cursorState.viewHeight = height
+        cursorState.selection = selection
+        cursorState.hasSelection = SelectionGeometry.isValid(selection)
+        cursorState.tool = activeTool
+        cursorState.blurWidth = CGFloat(blurPenWidth)
+        cursorMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { event in
+            Self.applyCursor(event: event, state: cursorState, screen: frame.screen)
+            return event
         }
     }
 
@@ -432,11 +314,183 @@ struct SelectionView: View {
         onSave(selection, CGFloat(cornerRadius), annotations)
     }
 
-    /// 撤销最后一笔标注（工具栏撤销钮）：空栈无操作（钮同时 40% 透明禁用）
+    /// 撤销最后一笔标注（工具栏撤销钮 / ⌘Z）：空栈无操作（撤销钮空栈时整钮不渲染）
     private func undoLastAnnotation() {
         if !annotations.isEmpty {
             annotations.removeLast()
         }
+    }
+
+    // MARK: 选区层（拆自主 body：表达式过大触发编译器「unable to type-check in reasonable time」）
+
+    /// 有效选区的全部视觉与交互层：白边 → 标注预览 Canvas → 尺寸徽标 →（调整态）move/手柄/绘制层 + 工具栏
+    @ViewBuilder
+    private func selectionLayers(in geo: GeometryProxy, sel: CGRect) -> some View {
+        // 白边随圆角实时变化：拖拽/调整态跟随 cornerRadius（含 @AppStorage 记忆值），与挖洞及最终输出一致（所见即所得，共用一处）
+        RoundedRectangle(cornerRadius: cornerRadius)
+            .strokeBorder(.white, lineWidth: 1)
+            .frame(width: sel.width, height: sel.height)
+            .position(x: sel.midX, y: sel.midY)
+            .allowsHitTesting(false)
+
+        annotationPreviewCanvas(sel: sel)
+            .frame(width: sel.width, height: sel.height)
+            .position(x: sel.midX, y: sel.midY)
+            .allowsHitTesting(false)
+
+        SizeBadge(rect: sel)
+            .position(x: min(sel.midX, geo.size.width - 60),
+                      y: max(sel.minY - 28, 26))
+            .allowsHitTesting(false)
+
+        if phase == .adjusting {
+            adjustmentLayers(in: geo, sel: sel)
+
+            // 选区右下角单行工具栏（紧贴选区，拖动玻璃块上非按钮的像素即可挪开）
+            captureToolbar(in: geo, sel: sel)
+        }
+    }
+
+    /// 标注实时渲染（含进行中的一笔）：屏幕预览与 AnnotationRenderer 像素合成同构
+    /// （共用 AnnotationGeometry.path；线帽/线接 round 一致，arrow = 整体 stroke + eoFill 头，
+    /// blur = clip 路径展宽 + 底图选区裁剪高斯模糊）。
+    /// 渲染在白边之后、move/绘制手势层之前；仅预览层不做命中（allowsHitTesting false 由调用方挂）。
+    /// 白色标注先 stroke 1pt separator 外扩描边再上色，浅色截图中仍可见（规格约束，仅预览层）。
+    private func annotationPreviewCanvas(sel: CGRect) -> some View {
+        Canvas { context, _ in
+            for a in annotations + [drawingAnnotation].compactMap({ $0 }) {
+                var ctx = context
+                // path 产出选区局部坐标（原点 = 视图原点），Canvas 原点 = sel.minX：平移对齐
+                ctx.translateBy(x: -sel.minX, y: -sel.minY)
+                let path = Path(AnnotationGeometry.path(for: a.kind, in: sel, lineWidth: a.lineWidth))
+                if case let .blur(_, radius) = a.kind {
+                    // 高斯模糊：涂抹路径展宽为 clip，冻结帧按选区裁剪、CIGaussianBlur（每笔 radius × 像素比）
+                    // 后 1:1 绘制（与 AnnotationRenderer 输出同构；颜色不参与渲染，坐标为视图坐标 → 画到 sel）
+                    if let blurred = blurPreviewImage(in: sel, radius: radius) {
+                        ctx.clip(to: path.strokedPath(StrokeStyle(lineWidth: a.lineWidth,
+                                                                  lineCap: .round, lineJoin: .round)))
+                        ctx.draw(Image(decorative: blurred, scale: 1), in: sel)
+                    }
+                    continue
+                }
+                let color = Color(red: a.color.r, green: a.color.g, blue: a.color.b, opacity: a.color.a)
+                if a.color == .white {
+                    ctx.stroke(path, with: .color(Color(nsColor: .separatorColor)),
+                               style: StrokeStyle(lineWidth: a.lineWidth + 2, lineCap: .round, lineJoin: .round))
+                }
+                ctx.stroke(path, with: .color(color),
+                           style: StrokeStyle(lineWidth: a.lineWidth, lineCap: .round, lineJoin: .round))
+                if case .arrow = a.kind {
+                    // 线段子路径零面积对 eoFill 无副作用，与 Renderer 同构（stroke 后 fill 成实心头）
+                    ctx.fill(path, with: .color(color), style: FillStyle(eoFill: true))
+                }
+            }
+        }
+    }
+
+    /// 调整态交互层：move 层（选区内拖动整体移动 + 双击确认）→ 8 个缩放手柄 → 标注绘制层
+    /// （工具激活时后渲染覆盖命中，move/边/角手势让位）
+    @ViewBuilder
+    private func adjustmentLayers(in geo: GeometryProxy, sel: CGRect) -> some View {
+        // 选区内：拖动整体移动 + 双击确认。
+        // 命中泄漏根因：contentShape 必须放在 position 之前——position 把子视图包进
+        // 「占满全部可用空间」的定位容器（bounds = 整个 ZStack = 整屏），contentShape
+        // 挂在其后定义的命中形状就是容器全屏 bounds，遮罩区远处的拖动也能触发 move
+        // （自 V2 潜伏；挂在其前，命中形状 = 选区尺寸的子视图本身）
+        Color.clear
+            .frame(width: sel.width, height: sel.height)
+            .contentShape(Rectangle())
+            .position(x: sel.midX, y: sel.midY)
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .named("sel"))
+                    .onChanged { value in
+                        // 双保险（防御层）：只有起点在选区内（±2pt 容差）才允许开始移动；
+                        // 只在起始判定（adjustKind == nil）时检查——移动中 selection 随拖拽
+                        // 平移，起点相对「当前选区」无参照意义，逐帧复查会把正常长拖误杀
+                        if adjustKind == nil {
+                            guard selection.insetBy(dx: -2, dy: -2).contains(value.startLocation) else { return }
+                            beginAdjust(.move, at: value.startLocation)
+                        }
+                        updateAdjust(to: value.location, in: geo.size)
+                    }
+                    .onEnded { value in
+                        // 同源防御：起点在选区外的手势结束不触碰状态（其开始已被 onChanged 拦截）；
+                        // 本层自己的 .move 结束照常清 adjustKind（不按已平移的当前选区复查起点）
+                        if adjustKind == .move || selection.insetBy(dx: -2, dy: -2).contains(value.startLocation) {
+                            adjustKind = nil
+                        }
+                    }
+            )
+            .onTapGesture(count: 2) { confirm() }
+
+        // 8 个缩放手柄（四角 + 四边中点）
+        HandleLayer(selection: sel)
+            .environment(\.adjustStarter) { kind, point in
+                beginAdjust(kind, at: point)
+            }
+            .environment(\.adjustUpdater) { point in
+                updateAdjust(to: point, in: geo.size)
+            }
+            .environment(\.adjustEnder) { adjustKind = nil }
+
+        // 标注绘制层：工具激活时渲染在 move 层/手柄之上——后渲染覆盖命中，
+        // move/边/角手势让位（双击确认随之失效，回车/按钮/右键仍可用）；
+        // 「选择」工具时本层不存在，恢复 move/手柄/双击现状。
+        // minimumDistance 0：原地点击也走 onChanged/onEnded（点一下的无效小标注由 isValid 丢弃）
+        if activeTool.takesOverDrag {
+            // 绘制层与 move 层同型泄漏：contentShape 同样移到 position 之前，
+            // 命中限定在选区尺寸内（否则绘制工具激活时遮罩区拖动会喂进 updateDrawing）
+            Color.clear
+                .frame(width: sel.width, height: sel.height)
+                .contentShape(Rectangle())
+                .position(x: sel.midX, y: sel.midY)
+                .gesture(
+                    DragGesture(minimumDistance: 0, coordinateSpace: .named("sel"))
+                        .onChanged { value in
+                            updateDrawing(to: value.location, start: value.startLocation, in: sel)
+                        }
+                        .onEnded { _ in commitDrawing(in: sel) }
+                )
+        }
+    }
+
+    /// 选区右下角单行工具栏（紧贴选区，拖动玻璃块上非按钮的像素即可挪开）：
+    /// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细][圆角]（按工具显隐）‖ [撤销]（空栈隐藏）‖ [保存][复制]；
+    /// 色板/粗细/圆角面板为触发钮 overlay（浮于钮正上方、可盖选区、不占布局）。
+    /// 整组布局（右缘锚点 / 底缘 / clamp / 面板光标带基底）见 toolbarRowLayout 单一公式源。
+    /// 独立成方法：主 body 过大触发编译器「unable to type-check in reasonable time」，拆块缓解
+    @ViewBuilder
+    private func captureToolbar(in geo: GeometryProxy, sel: CGRect) -> some View {
+        let group = Self.toolbarRowLayout(sel: sel, bounds: geo.size)
+        let toolbarDrag = toolbarOffset ?? .zero
+        CaptureToolbar(tool: $activeTool,
+                       color: $annotationColor,
+                       lineWidth: $annotationWidth,
+                       cornerRadius: $cornerRadius,
+                       blurRadius: $blurRadius,
+                       blurPenWidth: $blurPenWidth,
+                       showColorPalette: $showColorPalette,
+                       showWidthPicker: $showWidthPicker,
+                       showRadiusSlider: $showRadiusSlider,
+                       toolbarOffset: $toolbarOffset,
+                       toolbarDragging: $toolbarDragging,
+                       toolbarDragBase: $toolbarDragBase,
+                       clampRow: group.row,
+                       screenBounds: geo.size,
+                       canUndo: !annotations.isEmpty,
+                       onUndo: undoLastAnnotation,
+                       onSave: save,
+                       onCopy: confirm)
+        // 拖动经玻璃块背景层（拖非按钮的空白像素；按钮/滑块命中优先、不下落）；
+        // 拖动中轻微放大反馈。不加 hover 光标——applyCursor monitor 的 mouseMoved
+        // arrow 兜底会覆盖 onHover 设置，保持 arrow（macOS 工具栏惯例）
+        .scaleEffect(toolbarDragging ? 1.02 : 1)
+        // 组右缘/底缘先 pin 到屏右屏底、再 offset 到锚点 + 手动拖动偏移：右对齐不依赖行宽；
+        // 底缘锚定主行——面板展开向上生长，不推挤主行（主行不跳动）
+        .frame(width: geo.size.width, height: geo.size.height,
+               alignment: Alignment(horizontal: .trailing, vertical: .bottom))
+        .offset(x: group.right - geo.size.width + toolbarDrag.width,
+                y: group.bottom - geo.size.height + toolbarDrag.height)
     }
 
     // MARK: 标注绘制
@@ -599,11 +653,13 @@ struct SelectionView: View {
     /// 时组底缘 sel.maxY + 38（主行中心 sel.maxY + 21），否则收进选区内侧组底缘 sel.maxY - 4
     /// （主行 34pt 高：底部留 4pt，主体伸入选区内 38pt）。
     static func toolbarRowLayout(sel: CGRect, bounds: CGSize) -> (right: CGFloat, bottom: CGFloat, row: CGRect) {
-        // 玻璃胶囊实际宽 ≈437（工具 6×24 + 5×6 ＋ 分隔 1 ＋ 色钮 24 ＋ 粗细钮 24 ＋ 圆角钮 48 ＋ 分隔 1
-        // ＋ 撤销 24 ＋ 分隔 1 ＋ 保存钮 24 ＋ 复制钮 24 ＋ 9×8 段间距 ＋ 胶囊水平留白 10×2），
-        // blur 态色钮隐藏 ≈405；常量取含色钮宽 + 约 9pt 容差 → 446（保左缘 clamp 后仍有 6pt 屏内余量），
-        // 仅用于面板光标带基底与左缘 clamp；实际渲染用右缘 pin + offset，不依赖该估算。
-        let rowWidth: CGFloat = 446
+        // 玻璃胶囊实际宽：全显（标注工具 + 撤销栈非空）≈437（工具 6×24+5×6 ＋ 分隔 1
+        // ＋ 色钮 24 ＋ 粗细钮 24 ＋ 圆角钮 48 ＋ 分隔 1 ＋ 撤销 24 ＋ 分隔 1 ＋ 保存钮 24 ＋ 复制钮 24
+        // ＋ 10×8 段间距 ＋ 胶囊水平留白 10×2）；select 态最窄（色/宽/撤销隐藏）≈315，blur 态 ≈364，
+        // 均被保守覆盖；常量保留 482（历史值，全显宽 + 约 45pt 容差）——仅用于面板光标带基底与
+        // 左缘 clamp（偏保守只影响带略宽/clamp 略早，无正确性问题）；实际渲染用右缘 pin + offset，
+        // 不依赖该估算。
+        let rowWidth: CGFloat = 482
         let rowHeight: CGFloat = 34
         var right = sel.maxX
         if right - rowWidth < 6 {
@@ -810,10 +866,13 @@ private struct ToolbarIconButton: View {
 }
 
 /// 选区右下角单行工具栏（整体液态玻璃胶囊 ~34pt + 收起式弹出面板）：
-/// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]。
+/// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细]（按工具显隐）[圆角] ‖ [撤销]（空栈隐藏）‖ [保存][复制]。
 /// 视觉重构：整行包进单一 glassEffect(in: Capsule())（左右留白 10 / 上下 5，高 24+10=34），
 /// 钮全部无底色；色板/粗细/圆角面板仍为触发钮的独立玻璃胶囊 overlay（浮于钮正上方、间隙 4pt、
 /// 可盖选区、不占布局）。互斥至多展开一个：色/粗细选中即收起，圆角拖动不收起（再点圆角钮收起）。
+/// 拖动走玻璃块背景拖动层（拖非按钮的空白像素；按钮/滑块命中优先、不下落，Slider tracking 不被抢占）；
+/// 色/宽钮按工具自动显隐：select 无绘制参数全隐，blur 无颜色语义（色钮隐、宽度钮=双滑块触发），
+/// arrow/rect/ellipse/pen 全显。
 /// arrow/rect/ellipse/pen/blur 的绘制手势由 SelectionView 经 activeTool.takesOverDrag 接入选区拖动。
 private struct CaptureToolbar: View {
     @Binding var tool: AnnotationTool
@@ -826,7 +885,16 @@ private struct CaptureToolbar: View {
     @Binding var showColorPalette: Bool
     @Binding var showWidthPicker: Bool
     @Binding var showRadiusSlider: Bool
-    /// 撤销可用（annotations 非空）：不可用时撤销钮 40% 透明并禁用
+    /// 工具栏手动拖动偏移（nil = 锚定选区右下；背景拖动层手势经此回写，渲染 offset 与 panelBand 消费）
+    @Binding var toolbarOffset: CGSize?
+    /// 工具栏拖动进行中（背景拖动层手势标记；外层 scaleEffect 视觉反馈消费）
+    @Binding var toolbarDragging: Bool
+    /// 拖动起始偏移基线（onChanged 首帧从 toolbarOffset 解包，后续帧累加 translation）
+    @Binding var toolbarDragBase: CGSize
+    /// 拖动 clamp 基准：toolbarRowLayout 的 row 估算矩形与屏幕 bounds（clampedToolbarOffset 消费）
+    let clampRow: CGRect
+    let screenBounds: CGSize
+    /// 撤销可用（annotations 非空）：空栈时整钮不渲染（原 40% 置灰删除）
     let canUndo: Bool
     let onUndo: () -> Void
     let onSave: () -> Void
@@ -845,47 +913,89 @@ private struct CaptureToolbar: View {
     // MARK: 主行
 
     private var mainRow: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 6) {
-                // 「move」在 macOS 26 SDK 缺失（NSImage(systemSymbolName:) 返回 nil）；cursorarrow 视觉不佳，
-                // 选择工具改用手型 hand.draw（probe 实证存在）
-                ToolbarIconButton(symbol: "hand.draw", selected: tool == .select, accessibilityLabel: "选择") { tool = .select }
-                ToolbarIconButton(symbol: "arrow.up.right", selected: tool == .arrow, accessibilityLabel: "箭头") { tool = .arrow }
-                ToolbarIconButton(symbol: "rectangle", selected: tool == .rect, accessibilityLabel: "矩形") { tool = .rect }
-                ToolbarIconButton(symbol: "circle", selected: tool == .ellipse, accessibilityLabel: "椭圆") { tool = .ellipse }
-                ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
-                ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") { tool = .blur }
+        // 背景拖动层结构：ZStack 底层接管空白像素的拖动，上层按钮内容正常命中。
+        // SwiftUI 命中测试自上而下：按钮/滑块/分隔命中即不下落（Slider 的 tracking 不再被
+        // 容器手势抢占——滑块拖不动的正确修法）；钮间隙与 padding 的空白像素落到
+        // dragBackground，即「拖动非按钮的像素就支持拖动」
+        ZStack {
+            dragBackground
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    // 「move」在 macOS 26 SDK 缺失（NSImage(systemSymbolName:) 返回 nil）；cursorarrow 视觉不佳，
+                    // 选择工具改用手型 hand.draw（probe 实证存在）
+                    ToolbarIconButton(symbol: "hand.draw", selected: tool == .select, accessibilityLabel: "选择") { tool = .select }
+                    ToolbarIconButton(symbol: "arrow.up.right", selected: tool == .arrow, accessibilityLabel: "箭头") { tool = .arrow }
+                    ToolbarIconButton(symbol: "rectangle", selected: tool == .rect, accessibilityLabel: "矩形") { tool = .rect }
+                    ToolbarIconButton(symbol: "circle", selected: tool == .ellipse, accessibilityLabel: "椭圆") { tool = .ellipse }
+                    ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
+                    ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") { tool = .blur }
+                }
+                // 按工具自动显隐：色/宽钮仅标注绘制工具（arrow/rect/ellipse/pen）显示；
+                // select 无绘制参数（均隐藏）；blur 无颜色语义但宽度在双滑块面板——宽度钮保留为面板触发
+                if tool != .select && tool != .blur {
+                    separator
+                    currentColorButton
+                    currentWidthButton
+                } else if tool == .blur {
+                    separator
+                    currentWidthButton
+                }
+                radiusButton
+                // 撤销：空栈整钮不渲染（原 40% 置灰改为按需显隐）
+                if canUndo {
+                    separator
+                    ToolbarIconButton(symbol: "arrow.uturn.backward", selected: false, accessibilityLabel: "撤销", action: onUndo)
+                }
+                separator
+                // 动作钮：与其他钮统一 24×24 无底色纯图标规格（无选中态），accessibilityLabel 保可读性
+                ToolbarIconButton(symbol: "square.and.arrow.down",
+                                  selected: false,
+                                  accessibilityLabel: "保存",
+                                  action: onSave)
+                ToolbarIconButton(symbol: "doc.on.doc",
+                                  selected: false,
+                                  accessibilityLabel: "复制",
+                                  action: onCopy)
             }
-            separator
-            // blur 工具无颜色语义（颜色照存但不参与模糊渲染）：隐藏色板整钮，HStack 自适应收窄
-            // （行宽常量 396 保守不变，仅作面板光标带基底与左缘 clamp，偏宽无害）
-            if tool != .blur {
-                currentColorButton
-            }
-            currentWidthButton
-            radiusButton
-            separator
-            ToolbarIconButton(symbol: "arrow.uturn.backward", selected: false, accessibilityLabel: "撤销", action: onUndo)
-                .opacity(canUndo ? 1 : 0.4)
-                .disabled(!canUndo)
-            separator
-            // 动作钮：与其他钮统一 24×24 无底色纯图标规格（无选中态），accessibilityLabel 保可读性；
-            // 复制钮原 accent tint primary 特殊观感随整体玻璃块重构取消（全部统一无底色）
-            ToolbarIconButton(symbol: "square.and.arrow.down",
-                              selected: false,
-                              accessibilityLabel: "保存",
-                              action: onSave)
-            ToolbarIconButton(symbol: "doc.on.doc",
-                              selected: false,
-                              accessibilityLabel: "复制",
-                              action: onCopy)
+            .frame(height: 24)
         }
-        .frame(height: 24)
         // 整体玻璃块：单行内容包进一个胶囊（左右 10 / 上下 5 留白，高 24+10=34），
         // 替代原先每钮独立玻璃圆钮
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .glassEffect(in: Capsule())
+    }
+
+    /// 背景拖动层（ZStack 最底）：透明铺满玻璃块、contentShape 圈住全部像素，拖动非按钮的
+    /// 空白像素（钮间隙、padding）即可挪动整块——上层按钮/滑块命中优先、不下落，容器手势
+    /// 不再抢占 NSSlider tracking（滑块拖不动的回归修复）。
+    /// onChanged 首帧锁定基线（toolbarOffset nil 视作 .zero）后累加 translation；onEnded 距零 <12pt
+    /// 吸附归位，否则 clamp 屏内（左右 6pt / 上下 4pt）
+    private var dragBackground: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 2, coordinateSpace: .named("sel"))
+                    .onChanged { value in
+                        if !toolbarDragging {
+                            toolbarDragging = true
+                            toolbarDragBase = toolbarOffset ?? .zero
+                        }
+                        toolbarOffset = CGSize(width: toolbarDragBase.width + value.translation.width,
+                                               height: toolbarDragBase.height + value.translation.height)
+                    }
+                    .onEnded { value in
+                        toolbarDragging = false
+                        let offset = CGSize(width: toolbarDragBase.width + value.translation.width,
+                                            height: toolbarDragBase.height + value.translation.height)
+                        // 吸附归位：拖回距默认锚定 < 12pt 视为放弃手动位置，回归锚定
+                        if hypot(offset.width, offset.height) < 12 {
+                            toolbarOffset = nil
+                            return
+                        }
+                        toolbarOffset = SelectionView.clampedToolbarOffset(offset, row: clampRow, bounds: screenBounds)
+                    }
+            )
     }
 
     /// 当前色钮（24×24 命中区，内嵌 14pt 色圆点，无底色）：点击展开/收起色板面板（浮于钮正上方）
