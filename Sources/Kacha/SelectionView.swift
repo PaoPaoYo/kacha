@@ -1085,28 +1085,28 @@ private struct CaptureToolbar: View {
                 ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
                 ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") { tool = .blur }
             }
+            // 样式/宽度段左分隔符（**恒定**，在槽外）：样式槽 select 态收起时仍保证工具组
+            // 与圆角钮之间有分隔（随槽收起会只剩留白）；pen/blur 态几何与随槽版完全一致
+            // （工具组—8—sep—8—钮）
+            separator
             // 按工具自动显隐（显隐槽 RevealSlot，手动逐帧插值——见 RevealSlot 注释）：
             // pen 系显样式钮（色+宽合并面板触发）；select 无绘制参数（槽宽 0 全隐）；
-            // blur 显宽钮（双滑块面板触发）。
-            // 分隔符归属「各段左侧、随段显隐」：槽内容必须是水平 HStack——写成 Group 会被
-            // 拍平进 RevealSlot 的 ZStack(trailing) 垂直堆叠，分隔符被钮盖住不可见（样式钮
-            // 「缺左分隔」的根因）；HStack(spacing: 8) 宽 = 1+8+24 = 33 与槽宽吻合
-            RevealSlot(target: Self.revealSlotWidth(tool: tool), fullWidth: 33) {
-                HStack(spacing: 8) {
-                    separator
-                    if tool == .blur {
-                        currentWidthButton
-                            .background { if measure { anchorPublisher(.width) } }
-                    } else {
-                        styleButton
-                            .background { if measure { anchorPublisher(.style) } }
-                    }
+            // blur 显宽钮（双滑块面板触发）。槽内容只剩钮（宽 24）——左分隔符已移出槽外恒显，
+            // 单子层内容直接放（无前轮 Group 拍平垂直堆叠问题）
+            RevealSlot(target: Self.revealSlotWidth(tool: tool), fullWidth: 24) {
+                if tool == .blur {
+                    currentWidthButton
+                        .background { if measure { anchorPublisher(.width) } }
+                } else {
+                    styleButton
+                        .background { if measure { anchorPublisher(.style) } }
                 }
             }
             radiusButton
                 .background { if measure { anchorPublisher(.radius) } }
-            // 撤销：空栈整钮不渲染（原 40% 置灰改为按需显隐）；同款显隐槽手动插值伸缩，
-            // 左分隔符在槽内随槽一并收起（内容 HStack 理由同上）
+            // 撤销：空栈整钮不渲染（原 40% 置灰改为按需显隐）；同款显隐槽手动插值伸缩。
+            // 撤销段左分隔符留在槽内随槽收起（与样式段不同）：撤销收起后右侧紧跟保存段
+            // 的恒定分隔符，不存在「只剩留白」问题；分隔符随槽收起反而避免双分隔相邻
             RevealSlot(target: canUndo ? 33 : 0, fullWidth: 33) {
                 HStack(spacing: 8) {
                     separator
@@ -1127,10 +1127,11 @@ private struct CaptureToolbar: View {
         }
     }
 
-    /// 显隐槽宽度单一公式源（与 rowContent 显隐槽内容一一对应；槽内分隔 1 + spacing 8 + 钮 24）：
-    /// pen 系（样式钮）与 blur（宽钮）同为 33；select = 0（全隐）
+    /// 显隐槽宽度单一公式源（与 rowContent 显隐槽内容一一对应）：样式/宽槽内容仅钮 24
+    /// （左分隔符已移出槽外恒显）；select = 0（全隐）。撤销槽不走此公式（内容含左分隔符，
+    /// 恒 33，见 rowContent 调用处）
     private static func revealSlotWidth(tool: AnnotationTool) -> CGFloat {
-        tool == .select ? 0 : 1 + 8 + 24
+        tool == .select ? 0 : 24
     }
 
     /// 背景拖动层（挂 mainRow 的 .background、且必须挂 .glassEffect 之前——顺序语义见
