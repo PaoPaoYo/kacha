@@ -960,7 +960,8 @@ private struct PanelAnchorKey: PreferenceKey {
 /// 选区右下角单行工具栏（整体液态玻璃胶囊 ~34pt + 收起式弹出面板）：
 /// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [样式钮]（pen 系，按工具显隐；blur 显 [宽钮]）[圆角] ‖ [撤销]（空栈隐藏）‖ [保存][复制]。
 /// 视觉重构：整行包进单一 glassEffect(in: Capsule())（左右留白 10 / 上下 5，高 24+10=34），
-/// 钮全部无底色。样式（色板+粗细合并双层面板）/blur 双滑块/圆角面板为独立玻璃胶囊，
+/// 钮全部无底色。样式（色板+粗细合并双层面板）/blur 双滑块面板为 16pt 圆角玻璃矩形、
+/// 圆角面板为玻璃胶囊（偏矮小，胶囊合适），
 /// 浮于触发钮正上方、统一间隙 16pt（一个 slot 常量）、可盖选区、不占布局——但不再挂触发钮
 /// overlay：glassEffect 容器裁剪超出胶囊边界的命中（面板点不中/滑块拖不动的回归根因，
 /// probe 实证），改挂玻璃外面板浮层宿主（panelsHost），经玻璃外测量复刻层上报的锚点复现
@@ -1257,7 +1258,9 @@ private struct CaptureToolbar: View {
                 panelSlot(anchorX: anchorX) {
                     // 色板+粗细合并样式面板（两行 VStack，同 blur 双滑块面板节奏）：
                     // 上行 8 色板（当前色 ring）、下行 3 档粗细（当前档 ring）；
-                    // 选色/选档即时生效不收起——收起沿用现有交互（点样式钮 / 互斥切面板）
+                    // 选色/选档即时生效不收起——收起沿用现有交互（点样式钮 / 互斥切面板）。
+                    // 内容额外 .padding(.horizontal, 6)：8 色板首尾色与容器边缘留出明显
+                    // 间隙（原 10pt 留白下首尾色几乎贴边），粗细行同样受益
                     panelCapsuleAdaptive {
                         VStack(spacing: 6) {
                             HStack(spacing: 6) {
@@ -1272,6 +1275,7 @@ private struct CaptureToolbar: View {
                             }
                         }
                         .foregroundStyle(.primary)
+                        .padding(.horizontal, 6)
                     }
                     .offset(y: panelAnchorOffset)
                 }
@@ -1385,12 +1389,14 @@ private struct CaptureToolbar: View {
             .glassEffect(in: Capsule())
     }
 
-    /// 面板容器（高度自适应变体）：玻璃胶囊（水平 10 / 垂直 6 内边距），blur 双滑块面板 ~48 高
+    /// 面板容器（高度自适应变体，仅样式面板与 blur 双滑块面板使用）：玻璃圆角矩形
+    /// （16pt 圆角——面板偏高大，胶囊半圆端过鼓；水平 10 / 垂直 6 内边距），
+    /// blur 双滑块面板 ~48 高。圆角滑条面板仍走 panelCapsule（胶囊）不变
     private func panelCapsuleAdaptive<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .glassEffect(in: Capsule())
+            .glassEffect(in: RoundedRectangle(cornerRadius: 16))
     }
 
     // MARK: 复用控件
