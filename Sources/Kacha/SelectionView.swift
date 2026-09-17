@@ -1087,9 +1087,12 @@ private struct CaptureToolbar: View {
             }
             // 按工具自动显隐（显隐槽 RevealSlot，手动逐帧插值——见 RevealSlot 注释）：
             // pen 系显样式钮（色+宽合并面板触发）；select 无绘制参数（槽宽 0 全隐）；
-            // blur 显宽钮（双滑块面板触发）
+            // blur 显宽钮（双滑块面板触发）。
+            // 分隔符归属「各段左侧、随段显隐」：槽内容必须是水平 HStack——写成 Group 会被
+            // 拍平进 RevealSlot 的 ZStack(trailing) 垂直堆叠，分隔符被钮盖住不可见（样式钮
+            // 「缺左分隔」的根因）；HStack(spacing: 8) 宽 = 1+8+24 = 33 与槽宽吻合
             RevealSlot(target: Self.revealSlotWidth(tool: tool), fullWidth: 33) {
-                Group {
+                HStack(spacing: 8) {
                     separator
                     if tool == .blur {
                         currentWidthButton
@@ -1102,13 +1105,15 @@ private struct CaptureToolbar: View {
             }
             radiusButton
                 .background { if measure { anchorPublisher(.radius) } }
-            // 撤销：空栈整钮不渲染（原 40% 置灰改为按需显隐）；同款显隐槽手动插值伸缩
+            // 撤销：空栈整钮不渲染（原 40% 置灰改为按需显隐）；同款显隐槽手动插值伸缩，
+            // 左分隔符在槽内随槽一并收起（内容 HStack 理由同上）
             RevealSlot(target: canUndo ? 33 : 0, fullWidth: 33) {
-                Group {
+                HStack(spacing: 8) {
                     separator
                     ToolbarIconButton(symbol: "arrow.uturn.backward", selected: false, accessibilityLabel: "撤销", action: onUndo)
                 }
             }
+            // 保存/复制段的左分隔符（恒定）：撤销槽收起时仍在，保证动作段始终有左分隔
             separator
             // 动作钮：与其他钮统一 24×24 无底色纯图标规格（无选中态），accessibilityLabel 保可读性
             ToolbarIconButton(symbol: "square.and.arrow.down",
