@@ -956,18 +956,23 @@ private struct CaptureToolbar: View {
         // 替代原先每钮独立玻璃圆钮
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .glassEffect(in: Capsule())
-        // 背景拖动层经 .background 挂载（不用 ZStack 独立子层）：background 内容被宿主实际
-        // 尺寸约束、精确跟随玻璃胶囊——ZStack 子层的 Color.clear 是 flexible，会吃满全屏
-        // 定位 wrapper 的提议尺寸把玻璃块撑成整屏（全屏回归根因，同 V2 move 层
-        // position-wrapper 陷阱）。命中优先级不变：按钮/滑块在上、背景层只接空白像素
-        // （钮间隙/padding），「拖动非按钮的像素就支持拖动」，Slider tracking 不被抢占
+        // 拖动层必须挂在 glassEffect 之前（夹在按钮与玻璃之间，玻璃处于最底层）：
+        // glassEffect 把玻璃材质画在「被包裹内容」的底层，.background 若挂在其后，
+        // 拖动层会沉到玻璃之下——玻璃材质层本身参与命中测试，非按钮像素的命中
+        // 终止在玻璃上、永远落不到拖动层（拖不动回归根因）。挂在前则 z 序自下而上
+        // 为 玻璃 → 拖动层 → 按钮：空白像素（钮间隙/padding）命中拖动层即可挪动整块，
+        // 按钮命中优先不下落；背景层是滑块的兄弟层而非祖先，NSSlider tracking 不被抢占。
+        // 仍用 .background 而非 ZStack 独立子层：background 内容被宿主实际尺寸约束、
+        // 精确跟随胶囊——ZStack 子层的 Color.clear 是 flexible，会吃满全屏定位 wrapper
+        // 的提议尺寸把玻璃块撑成整屏（全屏回归根因，同 V2 move 层 position-wrapper 陷阱）
         .background {
             dragBackground
         }
+        .glassEffect(in: Capsule())
     }
 
-    /// 背景拖动层（挂 mainRow 的 .background，尺寸被宿主约束 = 玻璃胶囊实际大小）：
+    /// 背景拖动层（挂 mainRow 的 .background、且必须挂 .glassEffect 之前——顺序语义见
+    /// mainRow 注释；尺寸被宿主约束 = 玻璃胶囊实际大小）：
     /// 透明铺满玻璃块、contentShape 圈住全部像素，拖动非按钮的
     /// 空白像素（钮间隙、padding）即可挪动整块——上层按钮/滑块命中优先、不下落，容器手势
     /// 不再抢占 NSSlider tracking（滑块拖不动的回归修复）。
