@@ -58,6 +58,13 @@ struct SelectionView: View {
     @State private var showColorPalette = false
     @State private var showWidthPicker = false
     @State private var showRadiusSlider = false
+    /// 工具栏手动拖动偏移：nil = 默认锚定（选区右下，toolbarRowLayout）；非 nil = 相对锚定位置的
+    /// 偏移（松手时 clamp 到屏内 6/4pt 边距后的合法值；吸附阈值内置回 nil）
+    @State private var toolbarOffset: CGSize? = nil
+    /// 工具栏拖动进行中（视觉 scale 1.02 + onChanged 首帧基线标记）
+    @State private var toolbarDragging = false
+    /// 拖动起始偏移基线：onChanged 首帧从 toolbarOffset（nil 视作 .zero）解包，后续帧累加 translation
+    @State private var toolbarDragBase: CGSize = .zero
 
     var body: some View {
         GeometryReader { geo in
@@ -195,12 +202,13 @@ struct SelectionView: View {
                                 )
                         }
 
-                        // 选区右下角单行工具栏（紧贴选区）：
+                        // 选区右下角单行工具栏（紧贴选区，可整块拖动挪开）：
                         // [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细][圆角] ‖ [撤销] ‖ [保存][复制]；
                         // 色板/粗细/圆角面板为触发钮 overlay（浮于钮正上方、可盖选区、不占布局）。
                         // 整组布局（右缘锚点 / 底缘 / clamp / 面板光标带基底）见 toolbarRowLayout 单一公式源；
-                        // 行内控件均为点击（无拖动手势），调整态父层手势已禁用，不会把操作漏进选区拖动
+                        // 拖动遮挡选区时手动挪开：minimumDistance 2 保证钮点击（无位移按下抬起）正常触发
                         let group = Self.toolbarRowLayout(sel: sel, bounds: geo.size)
+                        let toolbarDrag = toolbarOffset ?? .zero
                         CaptureToolbar(tool: $activeTool,
                                        color: $annotationColor,
                                        lineWidth: $annotationWidth,
@@ -214,11 +222,39 @@ struct SelectionView: View {
                                        onUndo: undoLastAnnotation,
                                        onSave: save,
                                        onCopy: confirm)
-                        // 组右缘/底缘先 pin 到屏右屏底、再 offset 到锚点：右对齐不依赖行宽（行宽随内容自适应）；
+                        // 整块拖动：contentShape 让胶囊留白/间隙也命中；子级 Button 优先（.gesture 非高优先），
+                        // 无位移点击不受影响；拖动中轻微放大反馈。不加 hover 光标——applyCursor monitor 的
+                        // mouseMoved arrow 兜底会覆盖 onHover 设置，保持 arrow（macOS 工具栏惯例）
+                        .contentShape(Rectangle())
+                        .scaleEffect(toolbarDragging ? 1.02 : 1)
+                        .gesture(
+                            DragGesture(minimumDistance: 2, coordinateSpace: .named("sel"))
+                                .onChanged { value in
+                                    if !toolbarDragging {
+                                        toolbarDragging = true
+                                        toolbarDragBase = toolbarOffset ?? .zero
+                                    }
+                                    toolbarOffset = CGSize(width: toolbarDragBase.width + value.translation.width,
+                                                           height: toolbarDragBase.height + value.translation.height)
+                                }
+                                .onEnded { value in
+                                    toolbarDragging = false
+                                    let offset = CGSize(width: toolbarDragBase.width + value.translation.width,
+                                                        height: toolbarDragBase.height + value.translation.height)
+                                    // 吸附归位：拖回距默认锚定 < 12pt 视为放弃手动位置，回归锚定
+                                    if hypot(offset.width, offset.height) < 12 {
+                                        toolbarOffset = nil
+                                        return
+                                    }
+                                    toolbarOffset = Self.clampedToolbarOffset(offset, row: group.row, bounds: geo.size)
+                                }
+                        )
+                        // 组右缘/底缘先 pin 到屏右屏底、再 offset 到锚点 + 手动拖动偏移：右对齐不依赖行宽；
                         // 底缘锚定主行——面板展开向上生长，不推挤主行（主行不跳动）
                         .frame(width: geo.size.width, height: geo.size.height,
                                alignment: Alignment(horizontal: .trailing, vertical: .bottom))
-                        .offset(x: group.right - geo.size.width, y: group.bottom - geo.size.height)
+                        .offset(x: group.right - geo.size.width + toolbarDrag.width,
+                                y: group.bottom - geo.size.height + toolbarDrag.height)
                     }
                 }
             }
@@ -271,15 +307,24 @@ struct SelectionView: View {
             .onChange(of: selection) { _, new in
                 cursorState.selection = new
                 cursorState.hasSelection = SelectionGeometry.isValid(new)
-                // 面板展开光标带与渲染 offset 用同一公式（toolbarRowLayout 行矩形）；
+                // 面板展开光标带与渲染 offset 用同一公式（toolbarRowLayout 行矩形，含手动拖动偏移）；
                 // 选区源同步（面板全收起时为 .zero）
                 cursorState.panelBand = Self.panelBand(
                     sel: new, bounds: geo.size,
-                    anyPanelOpen: showColorPalette || showWidthPicker || showRadiusSlider)
+                    anyPanelOpen: showColorPalette || showWidthPicker || showRadiusSlider,
+                    drag: toolbarOffset ?? .zero)
             }
             .onChange(of: showColorPalette || showWidthPicker || showRadiusSlider) { _, open in
                 // 面板展开/收起源同步：任一面板开 → 行矩形向上扩 60pt 光标带，全收起 → .zero
-                cursorState.panelBand = Self.panelBand(sel: selection, bounds: geo.size, anyPanelOpen: open)
+                cursorState.panelBand = Self.panelBand(sel: selection, bounds: geo.size, anyPanelOpen: open,
+                                                       drag: toolbarOffset ?? .zero)
+            }
+            .onChange(of: toolbarOffset) { _, new in
+                // 工具栏拖动源同步：光标带跟随含偏移的最终组矩形（拖动中逐帧更新）
+                cursorState.panelBand = Self.panelBand(
+                    sel: selection, bounds: geo.size,
+                    anyPanelOpen: showColorPalette || showWidthPicker || showRadiusSlider,
+                    drag: new ?? .zero)
             }
             .onChange(of: blurPenWidth) { _, new in
                 // blur 笔刷光标直径源同步（实时跟随滑块；blurRadius 不影响光标）
@@ -573,11 +618,20 @@ struct SelectionView: View {
         return (right, bottom, row)
     }
 
-    /// 面板展开期间的光标带：主行矩形向上扩 60pt（面板 overlay 向上生长、几何上常盖住选区，
-    /// 带内一律箭头，不透出选区光标）。无有效选区或面板全收起时为 .zero（不拦光标）。
-    static func panelBand(sel: CGRect?, bounds: CGSize, anyPanelOpen: Bool) -> CGRect {
+    /// 面板展开期间的光标带：主行矩形（含手动拖动偏移）向上扩 60pt（面板 overlay 向上生长、
+    /// 几何上常盖住选区，带内一律箭头，不透出选区光标）。无有效选区或面板全收起时为 .zero（不拦光标）。
+    static func panelBand(sel: CGRect?, bounds: CGSize, anyPanelOpen: Bool, drag: CGSize = .zero) -> CGRect {
         guard anyPanelOpen, let sel, SelectionGeometry.isValid(sel) else { return .zero }
-        return toolbarRowLayout(sel: sel, bounds: bounds).row.insetBy(dx: 0, dy: -60)
+        return toolbarRowLayout(sel: sel, bounds: bounds).row
+            .offsetBy(dx: drag.width, dy: drag.height)
+            .insetBy(dx: 0, dy: -60)
+    }
+
+    /// 工具栏拖动 offset 的屏内 clamp：组矩形（layout.row 估算矩形 + offset）整体保持在屏内，
+    /// 左右 6pt、上下 4pt 边距；区间倒挂（屏极窄/矮容不下组）时取上界——尽量靠右/下。
+    static func clampedToolbarOffset(_ offset: CGSize, row: CGRect, bounds: CGSize) -> CGSize {
+        CGSize(width: min(max(offset.width, 6 - row.minX), bounds.width - 6 - row.maxX),
+               height: min(max(offset.height, 4 - row.minY), bounds.height - 4 - row.maxY))
     }
 
     /// 单一光标决策点：mouseMoved / leftMouseDragged 统一在此判定（cursorRect 已停用）
