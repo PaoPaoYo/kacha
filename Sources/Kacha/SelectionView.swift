@@ -913,60 +913,62 @@ private struct CaptureToolbar: View {
     // MARK: 主行
 
     private var mainRow: some View {
-        // 背景拖动层结构：ZStack 底层接管空白像素的拖动，上层按钮内容正常命中。
-        // SwiftUI 命中测试自上而下：按钮/滑块/分隔命中即不下落（Slider 的 tracking 不再被
-        // 容器手势抢占——滑块拖不动的正确修法）；钮间隙与 padding 的空白像素落到
-        // dragBackground，即「拖动非按钮的像素就支持拖动」
-        ZStack {
-            dragBackground
-            HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    // 「move」在 macOS 26 SDK 缺失（NSImage(systemSymbolName:) 返回 nil）；cursorarrow 视觉不佳，
-                    // 选择工具改用手型 hand.draw（probe 实证存在）
-                    ToolbarIconButton(symbol: "hand.draw", selected: tool == .select, accessibilityLabel: "选择") { tool = .select }
-                    ToolbarIconButton(symbol: "arrow.up.right", selected: tool == .arrow, accessibilityLabel: "箭头") { tool = .arrow }
-                    ToolbarIconButton(symbol: "rectangle", selected: tool == .rect, accessibilityLabel: "矩形") { tool = .rect }
-                    ToolbarIconButton(symbol: "circle", selected: tool == .ellipse, accessibilityLabel: "椭圆") { tool = .ellipse }
-                    ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
-                    ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") { tool = .blur }
-                }
-                // 按工具自动显隐：色/宽钮仅标注绘制工具（arrow/rect/ellipse/pen）显示；
-                // select 无绘制参数（均隐藏）；blur 无颜色语义但宽度在双滑块面板——宽度钮保留为面板触发
-                if tool != .select && tool != .blur {
-                    separator
-                    currentColorButton
-                    currentWidthButton
-                } else if tool == .blur {
-                    separator
-                    currentWidthButton
-                }
-                radiusButton
-                // 撤销：空栈整钮不渲染（原 40% 置灰改为按需显隐）
-                if canUndo {
-                    separator
-                    ToolbarIconButton(symbol: "arrow.uturn.backward", selected: false, accessibilityLabel: "撤销", action: onUndo)
-                }
-                separator
-                // 动作钮：与其他钮统一 24×24 无底色纯图标规格（无选中态），accessibilityLabel 保可读性
-                ToolbarIconButton(symbol: "square.and.arrow.down",
-                                  selected: false,
-                                  accessibilityLabel: "保存",
-                                  action: onSave)
-                ToolbarIconButton(symbol: "doc.on.doc",
-                                  selected: false,
-                                  accessibilityLabel: "复制",
-                                  action: onCopy)
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                // 「move」在 macOS 26 SDK 缺失（NSImage(systemSymbolName:) 返回 nil）；cursorarrow 视觉不佳，
+                // 选择工具改用手型 hand.draw（probe 实证存在）
+                ToolbarIconButton(symbol: "hand.draw", selected: tool == .select, accessibilityLabel: "选择") { tool = .select }
+                ToolbarIconButton(symbol: "arrow.up.right", selected: tool == .arrow, accessibilityLabel: "箭头") { tool = .arrow }
+                ToolbarIconButton(symbol: "rectangle", selected: tool == .rect, accessibilityLabel: "矩形") { tool = .rect }
+                ToolbarIconButton(symbol: "circle", selected: tool == .ellipse, accessibilityLabel: "椭圆") { tool = .ellipse }
+                ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
+                ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") { tool = .blur }
             }
-            .frame(height: 24)
+            // 按工具自动显隐：色/宽钮仅标注绘制工具（arrow/rect/ellipse/pen）显示；
+            // select 无绘制参数（均隐藏）；blur 无颜色语义但宽度在双滑块面板——宽度钮保留为面板触发
+            if tool != .select && tool != .blur {
+                separator
+                currentColorButton
+                currentWidthButton
+            } else if tool == .blur {
+                separator
+                currentWidthButton
+            }
+            radiusButton
+            // 撤销：空栈整钮不渲染（原 40% 置灰改为按需显隐）
+            if canUndo {
+                separator
+                ToolbarIconButton(symbol: "arrow.uturn.backward", selected: false, accessibilityLabel: "撤销", action: onUndo)
+            }
+            separator
+            // 动作钮：与其他钮统一 24×24 无底色纯图标规格（无选中态），accessibilityLabel 保可读性
+            ToolbarIconButton(symbol: "square.and.arrow.down",
+                              selected: false,
+                              accessibilityLabel: "保存",
+                              action: onSave)
+            ToolbarIconButton(symbol: "doc.on.doc",
+                              selected: false,
+                              accessibilityLabel: "复制",
+                              action: onCopy)
         }
+        .frame(height: 24)
         // 整体玻璃块：单行内容包进一个胶囊（左右 10 / 上下 5 留白，高 24+10=34），
         // 替代原先每钮独立玻璃圆钮
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .glassEffect(in: Capsule())
+        // 背景拖动层经 .background 挂载（不用 ZStack 独立子层）：background 内容被宿主实际
+        // 尺寸约束、精确跟随玻璃胶囊——ZStack 子层的 Color.clear 是 flexible，会吃满全屏
+        // 定位 wrapper 的提议尺寸把玻璃块撑成整屏（全屏回归根因，同 V2 move 层
+        // position-wrapper 陷阱）。命中优先级不变：按钮/滑块在上、背景层只接空白像素
+        // （钮间隙/padding），「拖动非按钮的像素就支持拖动」，Slider tracking 不被抢占
+        .background {
+            dragBackground
+        }
     }
 
-    /// 背景拖动层（ZStack 最底）：透明铺满玻璃块、contentShape 圈住全部像素，拖动非按钮的
+    /// 背景拖动层（挂 mainRow 的 .background，尺寸被宿主约束 = 玻璃胶囊实际大小）：
+    /// 透明铺满玻璃块、contentShape 圈住全部像素，拖动非按钮的
     /// 空白像素（钮间隙、padding）即可挪动整块——上层按钮/滑块命中优先、不下落，容器手势
     /// 不再抢占 NSSlider tracking（滑块拖不动的回归修复）。
     /// onChanged 首帧锁定基线（toolbarOffset nil 视作 .zero）后累加 translation；onEnded 距零 <12pt
