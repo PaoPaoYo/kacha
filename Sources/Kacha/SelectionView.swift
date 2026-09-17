@@ -872,11 +872,29 @@ private struct ToolbarIconButton: View {
     }
 }
 
+/// 弹出面板标识（锚点 preference 的 key）
+private enum PanelID: String {
+    case color, width, radius
+}
+
+/// 触发钮锚点 preference：[PanelID.rawValue: 胶囊本地空间中点 x]。只由测量复刻层发布
+/// （真实行不发布 → 空默认值 merge 无副作用），在玻璃外上溯（glassEffect 容器会吞噬
+/// 子层 preference 与命名坐标空间上溯，probe 实证）
+private struct PanelAnchorKey: PreferenceKey {
+    static let defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 /// 选区右下角单行工具栏（整体液态玻璃胶囊 ~34pt + 收起式弹出面板）：
 /// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细]（按工具显隐）[圆角] ‖ [撤销]（空栈隐藏）‖ [保存][复制]。
 /// 视觉重构：整行包进单一 glassEffect(in: Capsule())（左右留白 10 / 上下 5，高 24+10=34），
-/// 钮全部无底色；色板/粗细/圆角面板仍为触发钮的独立玻璃胶囊 overlay（浮于钮正上方、间隙 4pt、
-/// 可盖选区、不占布局）。互斥至多展开一个：色/粗细选中即收起，圆角拖动不收起（再点圆角钮收起）。
+/// 钮全部无底色。色板/粗细/圆角面板为独立玻璃胶囊，浮于触发钮正上方、间隙 4pt、可盖选区、
+/// 不占布局——但不再挂触发钮 overlay：glassEffect 容器裁剪超出胶囊边界的命中（面板点不中/
+/// 滑块拖不动的回归根因，probe 实证），改挂玻璃外面板浮层宿主（panelsHost），经玻璃外测量
+/// 复刻层上报的锚点复现原锚定几何（命中与视觉严格一致）。互斥至多展开一个：色/粗细选中
+/// 即收起，圆角拖动不收起（再点圆角钮收起）。
 /// 拖动走玻璃块背景拖动层（拖非按钮的空白像素；按钮/滑块命中优先、不下落，Slider tracking 不被抢占）；
 /// 色/宽钮按工具自动显隐：select 无绘制参数全隐，blur 无颜色语义（色钮隐、宽度钮=双滑块触发），
 /// arrow/rect/ellipse/pen 全显。
@@ -907,11 +925,14 @@ private struct CaptureToolbar: View {
     let onSave: () -> Void
     let onCopy: () -> Void
 
-    /// 面板锚定偏移（overlay alignment .bottom 上再 offset）：钮半高 12 ＋ 面板半高 12 ＋ 间隙 4
-    /// → 面板底缘贴钮顶上方 4pt
+    /// 面板锚定偏移（锚定槽 overlay alignment .bottom 上再 offset）：钮半高 12 ＋ 面板半高 12
+    /// ＋ 间隙 4 → 面板底缘贴钮顶上方 4pt
     private let panelAnchorOffset: CGFloat = -(12 + 24 / 2 + 4)
     /// 模糊双滑块面板锚定偏移：面板高自适应 ~48（半高 24），同式保持 4pt 间隙
     private let blurPanelAnchorOffset: CGFloat = -(12 + 48 / 2 + 4)
+    /// 触发钮锚点（测量复刻层上报，胶囊本地空间中点 x；key = PanelID.rawValue）——
+    /// 面板浮层宿主定位消费。锚点经玻璃外 preference 送达（玻璃内上报会被容器吞噬）
+    @State private var panelAnchors: [String: CGFloat] = [:]
 
     var body: some View {
         mainRow
@@ -919,7 +940,58 @@ private struct CaptureToolbar: View {
 
     // MARK: 主行
 
+    /// 主行 = 行内容（玻璃包裹）+ 锚点测量复刻层（玻璃外）+ 面板浮层宿主（玻璃外）。
+    /// 关键约束（probe 实证，macOS 26 SDK）：glassEffect 把被包裹内容装进以玻璃形状为界的
+    /// 容器——容器内超出胶囊边界的部分（按钮 overlay 上的弹出面板）命中被裁剪吞掉
+    /// （点不中、滑块拖不动），且容器的 preference/命名坐标空间上溯也被吞噬。
+    /// 因此：① 弹出面板必须挂到玻璃之外（本结构 .overlay 兄弟层）；② 面板锚定所需的
+    /// 触发钮位置测量也要在玻璃之外做——用同一 rowContent 构建器渲染一份不可见复刻层
+    /// （几何恒同），preference 在玻璃外上报，面板浮层按锚点 slot 复现「overlay 于触发钮」
+    /// 的原锚定几何。玻璃内只留按钮 + 拖动层（09dd5e0 的 z 序语义不变）
     private var mainRow: some View {
+        rowContent(measure: false)
+            .frame(height: 24)
+            // 整体玻璃块：单行内容包进一个胶囊（左右 10 / 上下 5 留白，高 24+10=34），
+            // 替代原先每钮独立玻璃圆钮
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            // 拖动层必须挂在 glassEffect 之前（夹在按钮与玻璃之间，玻璃处于最底层）：
+            // glassEffect 把玻璃材质画在「被包裹内容」的底层，.background 若挂在其后，
+            // 拖动层会沉到玻璃之下——玻璃材质层本身参与命中测试，非按钮像素的命中
+            // 终止在玻璃上、永远落不到拖动层（拖不动回归根因）。挂在前则 z 序自下而上
+            // 为 玻璃 → 拖动层 → 按钮：空白像素（钮间隙/padding）命中拖动层即可挪动整块，
+            // 按钮命中优先不下落；背景层是滑块的兄弟层而非祖先，NSSlider tracking 不被抢占。
+            // 仍用 .background 而非 ZStack 独立子层：background 内容被宿主实际尺寸约束、
+            // 精确跟随胶囊——ZStack 子层的 Color.clear 是 flexible，会吃满全屏定位 wrapper
+            // 的提议尺寸把玻璃块撑成整屏（全屏回归根因，同 V2 move 层 position-wrapper 陷阱）
+            .background {
+                dragBackground
+            }
+            .glassEffect(in: Capsule())
+            // 锚点测量复刻层：同一 rowContent（几何与真实行恒同）、不可见不可命中；
+            // 复刻层经 .overlay 挂载（居中于同尺寸宿主 = 精确重合），其 padding 后本地
+            // 坐标空间即胶囊本地空间（面板 slot 定位共用）
+            .overlay {
+                rowContent(measure: true)
+                    .frame(height: 24)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .coordinateSpace(name: "panelAnchorSpace")
+                    .opacity(0)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            // 面板浮层宿主：玻璃之上的兄弟层，命中不被玻璃容器裁剪（面板可点可拖的修复本体）
+            .overlay {
+                panelsHost
+            }
+            .onPreferenceChange(PanelAnchorKey.self) { panelAnchors = $0 }
+    }
+
+    /// 行内容单一构建源（真实行与测量复刻层共用，几何恒同）：measure = true 时三个
+    /// 触发钮经 background GR 上报锚点（背景不占布局，真实行 measure = false 无影响）
+    @ViewBuilder
+    private func rowContent(measure: Bool) -> some View {
         HStack(spacing: 8) {
             HStack(spacing: 6) {
                 // 「move」在 macOS 26 SDK 缺失（NSImage(systemSymbolName:) 返回 nil）；cursorarrow 视觉不佳，
@@ -936,12 +1008,16 @@ private struct CaptureToolbar: View {
             if tool != .select && tool != .blur {
                 separator
                 currentColorButton
+                    .background { if measure { anchorPublisher(.color) } }
                 currentWidthButton
+                    .background { if measure { anchorPublisher(.width) } }
             } else if tool == .blur {
                 separator
                 currentWidthButton
+                    .background { if measure { anchorPublisher(.width) } }
             }
             radiusButton
+                .background { if measure { anchorPublisher(.radius) } }
             // 撤销：空栈整钮不渲染（原 40% 置灰改为按需显隐）
             if canUndo {
                 separator
@@ -958,24 +1034,6 @@ private struct CaptureToolbar: View {
                               accessibilityLabel: "复制",
                               action: onCopy)
         }
-        .frame(height: 24)
-        // 整体玻璃块：单行内容包进一个胶囊（左右 10 / 上下 5 留白，高 24+10=34），
-        // 替代原先每钮独立玻璃圆钮
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        // 拖动层必须挂在 glassEffect 之前（夹在按钮与玻璃之间，玻璃处于最底层）：
-        // glassEffect 把玻璃材质画在「被包裹内容」的底层，.background 若挂在其后，
-        // 拖动层会沉到玻璃之下——玻璃材质层本身参与命中测试，非按钮像素的命中
-        // 终止在玻璃上、永远落不到拖动层（拖不动回归根因）。挂在前则 z 序自下而上
-        // 为 玻璃 → 拖动层 → 按钮：空白像素（钮间隙/padding）命中拖动层即可挪动整块，
-        // 按钮命中优先不下落；背景层是滑块的兄弟层而非祖先，NSSlider tracking 不被抢占。
-        // 仍用 .background 而非 ZStack 独立子层：background 内容被宿主实际尺寸约束、
-        // 精确跟随胶囊——ZStack 子层的 Color.clear 是 flexible，会吃满全屏定位 wrapper
-        // 的提议尺寸把玻璃块撑成整屏（全屏回归根因，同 V2 move 层 position-wrapper 陷阱）
-        .background {
-            dragBackground
-        }
-        .glassEffect(in: Capsule())
     }
 
     /// 背景拖动层（挂 mainRow 的 .background、且必须挂 .glassEffect 之前——顺序语义见
@@ -1013,7 +1071,9 @@ private struct CaptureToolbar: View {
             )
     }
 
-    /// 当前色钮（24×24 命中区，内嵌 14pt 色圆点，无底色）：点击展开/收起色板面板（浮于钮正上方）
+    /// 当前色钮（24×24 命中区，内嵌 14pt 色圆点，无底色）：点击展开/收起色板面板。
+    /// 面板不再挂本钮 overlay——玻璃容器会裁剪超出胶囊边界的命中（见 mainRow 注释），
+    /// 改经 panelsHost 锚定槽浮于钮正上方（视觉与命中同几何）
     private var currentColorButton: some View {
         Button {
             togglePanel { showColorPalette.toggle() }
@@ -1023,22 +1083,11 @@ private struct CaptureToolbar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .overlay(alignment: .bottom) {
-            if showColorPalette {
-                panelCapsule {
-                    HStack(spacing: 6) {
-                        ForEach(Array(RGBA.palette.enumerated()), id: \.offset) { _, c in
-                            colorSwatch(c) { showColorPalette = false }
-                        }
-                    }
-                }
-                .offset(y: panelAnchorOffset)
-            }
-        }
     }
 
-    /// 当前粗细钮（24×24 命中区，内嵌 dotDiameter 实心圆点，无底色）：点击展开/收起粗细面板（浮于钮正上方）。
-    /// 面板内容按工具分支：普通工具 = 三档圆点；blur 工具 = 半径/笔宽双滑块（两行，~48 高）
+    /// 当前粗细钮（24×24 命中区，内嵌 dotDiameter 实心圆点，无底色）：点击展开/收起粗细面板。
+    /// 面板内容按工具分支：普通工具 = 三档圆点；blur 工具 = 半径/笔宽双滑块（两行，~48 高）。
+    /// 面板同样改挂 panelsHost（玻璃外），命中不再被裁剪
     private var currentWidthButton: some View {
         Button {
             togglePanel { showWidthPicker.toggle() }
@@ -1050,25 +1099,6 @@ private struct CaptureToolbar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .overlay(alignment: .bottom) {
-            if showWidthPicker {
-                if tool == .blur {
-                    panelCapsuleAdaptive {
-                        blurSliderPanel
-                    }
-                    .offset(y: blurPanelAnchorOffset)
-                } else {
-                    panelCapsule {
-                        HStack(spacing: 6) {
-                            ForEach(AnnotationWidth.allCases, id: \.pt) { w in
-                                widthButton(w) { showWidthPicker = false }
-                            }
-                        }
-                    }
-                    .offset(y: panelAnchorOffset)
-                }
-            }
-        }
     }
 
     /// 模糊工具双滑块面板：上行「半径」4...20（step 1，固化进每笔）、下行「宽度」8...80（step 2）；
@@ -1096,7 +1126,8 @@ private struct CaptureToolbar: View {
     }
 
     /// 圆角钮（无底色：rectangle.roundedtop 圆角矩形符号（比 ruler 更直观，probe 实证存在）
-    /// + 当前值 10pt monospacedDigit）：点击展开/收起圆角滑条面板（浮于钮正上方；滑条拖动不收起，再点钮收起）
+    /// + 当前值 10pt monospacedDigit）：点击展开/收起圆角滑条面板（浮于钮正上方；滑条拖动不收起，再点钮收起）。
+    /// 面板同样改挂 panelsHost（玻璃外）
     private var radiusButton: some View {
         Button {
             togglePanel { showRadiusSlider.toggle() }
@@ -1112,20 +1143,90 @@ private struct CaptureToolbar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .overlay(alignment: .bottom) {
-            if showRadiusSlider {
-                panelCapsule {
-                    HStack(spacing: 12) {
-                        Text("圆角").font(.system(size: 12, weight: .medium))
-                        Slider(value: $cornerRadius, in: 0...40, step: 1)
-                            .frame(width: 160)
-                        Text("\(Int(cornerRadius))")
-                            .font(.system(size: 12, weight: .medium).monospacedDigit())
-                            .frame(width: 24)
+    }
+
+    // MARK: 面板浮层宿主（玻璃外）
+
+    /// 面板浮层宿主（挂 mainRow 玻璃合成体的 .overlay，玻璃外兄弟层）：按互斥开关渲染
+    /// 当前展开的面板，锚定槽对准测量复刻层上报的触发钮中点 x。渲染门槛同时镜像触发钮
+    /// 的显隐条件（触发钮因工具切换消失时面板随之消失，同旧 overlay 行为）与锚点已测得
+    /// （锚点在首次布局即上报；面板只经触发钮点击打开，不存在锚点未就位窗口）
+    @ViewBuilder
+    private var panelsHost: some View {
+        GeometryReader { _ in
+            if showColorPalette, tool != .select, tool != .blur,
+               let anchorX = panelAnchors[PanelID.color.rawValue] {
+                panelSlot(anchorX: anchorX) {
+                    panelCapsule {
+                        HStack(spacing: 6) {
+                            ForEach(Array(RGBA.palette.enumerated()), id: \.offset) { _, c in
+                                colorSwatch(c) { showColorPalette = false }
+                            }
+                        }
+                    }
+                    .offset(y: panelAnchorOffset)
+                }
+            }
+            if showWidthPicker, tool != .select,
+               let anchorX = panelAnchors[PanelID.width.rawValue] {
+                if tool == .blur {
+                    panelSlot(anchorX: anchorX) {
+                        panelCapsuleAdaptive {
+                            blurSliderPanel
+                        }
+                        .offset(y: blurPanelAnchorOffset)
+                    }
+                } else {
+                    panelSlot(anchorX: anchorX) {
+                        panelCapsule {
+                            HStack(spacing: 6) {
+                                ForEach(AnnotationWidth.allCases, id: \.pt) { w in
+                                    widthButton(w) { showWidthPicker = false }
+                                }
+                            }
+                        }
+                        .offset(y: panelAnchorOffset)
                     }
                 }
-                .offset(y: panelAnchorOffset)
             }
+            if showRadiusSlider, let anchorX = panelAnchors[PanelID.radius.rawValue] {
+                panelSlot(anchorX: anchorX) {
+                    panelCapsule {
+                        HStack(spacing: 12) {
+                            Text("圆角").font(.system(size: 12, weight: .medium))
+                            Slider(value: $cornerRadius, in: 0...40, step: 1)
+                                .frame(width: 160)
+                            Text("\(Int(cornerRadius))")
+                                .font(.system(size: 12, weight: .medium).monospacedDigit())
+                                .frame(width: 24)
+                        }
+                    }
+                    .offset(y: panelAnchorOffset)
+                }
+            }
+        }
+    }
+
+    /// 面板锚定槽：24×24 透明槽（与触发钮同尺寸）复现「overlay 于触发钮」的原锚定几何——
+    /// 面板 overlay 挂在槽的 24×24 frame 上、bottom 对齐 + 原 offset，再整体 .position 到
+    /// 锚点。顺序关键（probe 实证，同 V2 contentShape-after-position 陷阱的镜像）：
+    /// overlay 必须挂在 .position 之前——position 之后再挂 overlay 会锚到定位包装器的
+    /// 全部提议区域（整个胶囊），面板错位到胶囊中心
+    private func panelSlot<Panel: View>(anchorX: CGFloat, @ViewBuilder panel: () -> Panel) -> some View {
+        Color.clear
+            .frame(width: 24, height: 24)
+            .overlay(alignment: .bottom) {
+                panel()
+            }
+            .position(x: anchorX, y: 17)   // 触发钮中心：胶囊高 34 − 垂直留白 5 − 半钮 12
+    }
+
+    /// 锚点上报层（仅测量复刻行使用）：触发钮在 panelAnchorSpace（复刻层 padding 后本地
+    /// 空间 = 胶囊本地空间）的中点 x，经 preference 在玻璃外上报（玻璃内上报会被吞噬）
+    private func anchorPublisher(_ id: PanelID) -> some View {
+        GeometryReader { g in
+            Color.clear.preference(key: PanelAnchorKey.self,
+                                   value: [id.rawValue: g.frame(in: .named("panelAnchorSpace")).midX])
         }
     }
 
