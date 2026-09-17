@@ -54,8 +54,9 @@ struct SelectionView: View {
     @State private var drawingAnnotation: Annotation?
     /// 模糊预览图缓存（单条目，见 blurPreviewImage）
     @State private var blurPreview = BlurPreviewCache()
-    /// 收起式弹出面板开关（互斥：同一时间至多展开一个，打开一个即关其他；面板为触发钮 overlay，不占布局）
-    @State private var showColorPalette = false
+    /// 收起式弹出面板开关（互斥：同一时间至多展开一个；面板经玻璃外浮层宿主 panelsHost 呈现）：
+    /// showStylePanel = 色板+粗细合并样式面板（pen 系）/ showWidthPicker = blur 双滑块 / showRadiusSlider = 圆角
+    @State private var showStylePanel = false
     @State private var showWidthPicker = false
     @State private var showRadiusSlider = false
     /// 工具栏自由位置（sel 空间胶囊右下角锚点的绝对点）：nil = 锚定跟随模式（贴选区右下、随选区
@@ -97,7 +98,7 @@ struct SelectionView: View {
             // 面板展开光标带与渲染 offset 用同一公式（toolbarRowLayout 行矩形，含手动拖动偏移）
             syncSelectionState(new: new, bounds: geo.size)
         }
-        .onChange(of: showColorPalette || showWidthPicker || showRadiusSlider) { _, _ in
+        .onChange(of: showStylePanel || showWidthPicker || showRadiusSlider) { _, _ in
             // 面板展开/收起源同步：任一面板开 → 行矩形向上扩 60pt 光标带，全收起 → .zero
             syncPanelBand(sel: selection, bounds: geo.size)
         }
@@ -116,7 +117,7 @@ struct SelectionView: View {
             // 目标面板立即关掉（blur 态宽度面板「点一次没反应」的根因），且面板渲染门槛
             // 镜像触发钮显隐——工具切换后面板理应随之消失。
             // 收起动画由 CaptureToolbar mainRow 的 .animation(value:) 驱动，无需 withAnimation
-            showColorPalette = false
+            showStylePanel = false
             showWidthPicker = false
             showRadiusSlider = false
         }
@@ -245,7 +246,7 @@ struct SelectionView: View {
         }
         cursorState.panelBand = Self.panelBand(
             sel: sel, bounds: bounds,
-            anyPanelOpen: showColorPalette || showWidthPicker || showRadiusSlider,
+            anyPanelOpen: showStylePanel || showWidthPicker || showRadiusSlider,
             drag: drag)
     }
 
@@ -489,7 +490,7 @@ struct SelectionView: View {
                        cornerRadius: $cornerRadius,
                        blurRadius: $blurRadius,
                        blurPenWidth: $blurPenWidth,
-                       showColorPalette: $showColorPalette,
+                       showStylePanel: $showStylePanel,
                        showWidthPicker: $showWidthPicker,
                        showRadiusSlider: $showRadiusSlider,
                        toolbarPosition: $toolbarPosition,
@@ -673,10 +674,10 @@ struct SelectionView: View {
     /// 时组底缘 sel.maxY + 38（主行中心 sel.maxY + 21），否则收进选区内侧组底缘 sel.maxY - 4
     /// （主行 34pt 高：底部留 4pt，主体伸入选区内 38pt）。
     static func toolbarRowLayout(sel: CGRect, bounds: CGSize) -> (right: CGFloat, bottom: CGFloat, row: CGRect) {
-        // 玻璃胶囊实际宽：全显（标注工具 + 撤销栈非空）≈437（工具 6×24+5×6 ＋ 分隔 1
-        // ＋ 色钮 24 ＋ 粗细钮 24 ＋ 圆角钮 48 ＋ 分隔 1 ＋ 撤销 24 ＋ 分隔 1 ＋ 保存钮 24 ＋ 复制钮 24
-        // ＋ 10×8 段间距 ＋ 胶囊水平留白 10×2）；select 态最窄（色/宽/撤销隐藏）≈315，blur 态 ≈364，
-        // 均被保守覆盖；常量保留 482（历史值，全显宽 + 约 45pt 容差）——仅用于锚定初始位置的
+        // 玻璃胶囊实际宽：全显（pen 系 + 撤销栈非空）≈405（工具 6×24+5×6 ＋ 分隔 1
+        // ＋ 样式钮 24 ＋ 圆角钮 48 ＋ 分隔 1 ＋ 撤销 24 ＋ 分隔 1 ＋ 保存钮 24 ＋ 复制钮 24
+        // ＋ 9×8 段间距 ＋ 胶囊水平留白 10×2）；select 态最窄（样式/撤销隐藏）≈283，blur 态 ≈364，
+        // 均被保守覆盖；常量保留 482（历史值，全显宽 + 约 77pt 容差）——仅用于锚定初始位置的
         // 左缘保护与光标带基底（偏保守只影响带略宽/锚点略右，无正确性问题）；实际渲染用右下角
         // 锚点 pin + offset，不依赖该估算。
         let rowWidth: CGFloat = 482
@@ -879,9 +880,10 @@ private struct ToolbarIconButton: View {
     }
 }
 
-/// 弹出面板标识（锚点 preference 的 key；互斥开关按其寻址）
+/// 弹出面板标识（锚点 preference 的 key；互斥开关按其寻址）：style = 色+宽合并样式面板
+/// （pen 系专用钮触发）、width = blur 双滑块面板、radius = 圆角
 private enum PanelID: String, CaseIterable {
-    case color, width, radius
+    case style, width, radius
 }
 
 /// 触发钮锚点 preference：[PanelID.rawValue: 胶囊本地空间中点 x]。只由测量复刻层发布
@@ -895,17 +897,18 @@ private struct PanelAnchorKey: PreferenceKey {
 }
 
 /// 选区右下角单行工具栏（整体液态玻璃胶囊 ~34pt + 收起式弹出面板）：
-/// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细]（按工具显隐）[圆角] ‖ [撤销]（空栈隐藏）‖ [保存][复制]。
+/// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [样式钮]（pen 系，按工具显隐；blur 显 [宽钮]）[圆角] ‖ [撤销]（空栈隐藏）‖ [保存][复制]。
 /// 视觉重构：整行包进单一 glassEffect(in: Capsule())（左右留白 10 / 上下 5，高 24+10=34），
-/// 钮全部无底色。色板/粗细/圆角面板为独立玻璃胶囊，浮于触发钮正上方、统一间隙 16pt
-/// （四面板一个 slot 常量，含 blur 双滑块）、可盖选区、不占布局——但不再挂触发钮 overlay：
-/// glassEffect 容器裁剪超出胶囊边界的命中（面板点不中/滑块拖不动的回归根因，probe 实证），
-/// 改挂玻璃外面板浮层宿主（panelsHost），经玻璃外测量复刻层上报的锚点复现原锚定几何
-/// （命中与视觉严格一致）。互斥至多展开一个，开合带系统动画（opacity + 底部滑入，
-/// 见 panelsHost/mainRow）：色/粗细选中即收起，圆角拖动不收起（再点圆角钮收起）。
+/// 钮全部无底色。样式（色板+粗细合并双层面板）/blur 双滑块/圆角面板为独立玻璃胶囊，
+/// 浮于触发钮正上方、统一间隙 16pt（一个 slot 常量）、可盖选区、不占布局——但不再挂触发钮
+/// overlay：glassEffect 容器裁剪超出胶囊边界的命中（面板点不中/滑块拖不动的回归根因，
+/// probe 实证），改挂玻璃外面板浮层宿主（panelsHost），经玻璃外测量复刻层上报的锚点复现
+/// 原锚定几何（命中与视觉严格一致）。互斥至多展开一个，开合带系统动画（opacity + 底部滑入，
+/// 见 panelsHost/mainRow）：样式面板选色/选档即时生效不收起（点样式钮或互斥收起），
+/// 圆角拖动不收起（再点圆角钮收起）。
 /// 拖动走玻璃块背景拖动层（拖非按钮的空白像素；按钮/滑块命中优先、不下落，Slider tracking 不被抢占）；
-/// 色/宽钮按工具自动显隐：select 无绘制参数全隐，blur 无颜色语义（色钮隐、宽度钮=双滑块触发），
-/// arrow/rect/ellipse/pen 全显。
+/// 样式钮/宽钮按工具自动显隐（显隐槽机制见 revealSlot）：select 无绘制参数全隐（槽宽 0），
+/// pen 系显样式钮（色+宽合并触发）、blur 显宽钮（双滑块触发）。
 /// arrow/rect/ellipse/pen/blur 的绘制手势由 SelectionView 经 activeTool.takesOverDrag 接入选区拖动。
 private struct CaptureToolbar: View {
     @Binding var tool: AnnotationTool
@@ -915,7 +918,8 @@ private struct CaptureToolbar: View {
     /// 模糊工具专属双滑块值（半径 4...20 / 笔宽 8...80），仅 blur 面板消费
     @Binding var blurRadius: Double
     @Binding var blurPenWidth: Double
-    @Binding var showColorPalette: Bool
+    /// 色板+粗细合并样式面板开关（pen 系样式钮触发）
+    @Binding var showStylePanel: Bool
     @Binding var showWidthPicker: Bool
     @Binding var showRadiusSlider: Bool
     /// 工具栏自由位置（nil = 锚定跟随；sel 空间胶囊右下角锚点绝对点，背景拖动层手势经此回写，
@@ -997,7 +1001,7 @@ private struct CaptureToolbar: View {
             // 驱动色/宽钮、canUndo 驱动撤销钮，transition .opacity 见 rowContent）。
             // .animation(value:) 是纯驱动修饰符：不创建容器、不参与命中，玻璃 z 序、拖动层
             // 挂载与面板浮层宿主结构均不受影响
-            .animation(.snappy, value: showColorPalette)
+            .animation(.snappy, value: showStylePanel)
             .animation(.snappy, value: showWidthPicker)
             .animation(.snappy, value: showRadiusSlider)
             .animation(.snappy, value: tool)
@@ -1019,25 +1023,21 @@ private struct CaptureToolbar: View {
                 ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
                 ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") { tool = .blur }
             }
-            // 按工具自动显隐（动画由 mainRow 的 .animation(value: activeTool) 驱动，淡入淡出）：
-            // 色/宽钮仅标注绘制工具（arrow/rect/ellipse/pen）显示；
-            // select 无绘制参数（均隐藏）；blur 无颜色语义但宽度在双滑块面板——宽度钮保留为面板触发
-            if tool != .select && tool != .blur {
+            // 按工具自动显隐（显隐槽机制，见 revealSlot/revealSlotWidth；动画由 mainRow 的
+            // .animation(value: tool) 驱动，宽度连续插值、内容 trailing 对齐右缘恒定向左伸缩）：
+            // pen 系显样式钮（色+宽合并面板触发）；select 无绘制参数（槽宽 0 全隐）；
+            // blur 显宽钮（双滑块面板触发）
+            revealSlot(width: Self.revealSlotWidth(tool: tool)) {
                 Group {
                     separator
-                    currentColorButton
-                        .background { if measure { anchorPublisher(.color) } }
-                    currentWidthButton
-                        .background { if measure { anchorPublisher(.width) } }
+                    if tool == .blur {
+                        currentWidthButton
+                            .background { if measure { anchorPublisher(.width) } }
+                    } else {
+                        styleButton
+                            .background { if measure { anchorPublisher(.style) } }
+                    }
                 }
-                .transition(.opacity)
-            } else if tool == .blur {
-                Group {
-                    separator
-                    currentWidthButton
-                        .background { if measure { anchorPublisher(.width) } }
-                }
-                .transition(.opacity)
             }
             radiusButton
                 .background { if measure { anchorPublisher(.radius) } }
@@ -1060,6 +1060,30 @@ private struct CaptureToolbar: View {
                               accessibilityLabel: "复制",
                               action: onCopy)
         }
+    }
+
+    /// 显隐槽宽度单一公式源（与 rowContent 显隐槽内容一一对应；槽内分隔 1 + spacing 8 + 钮 24）：
+    /// pen 系（样式钮）与 blur（宽钮）同为 33；select = 0（全隐）
+    private static func revealSlotWidth(tool: AnnotationTool) -> CGFloat {
+        tool == .select ? 0 : 1 + 8 + 24
+    }
+
+    /// 显隐槽（按钮显隐的布局机制）：**恒在布局的定宽容器**——宽度经 .animation(value: tool)
+    /// 连续插值，无结构增删的布局跳变（结构增删下布局第一帧即时重排、存活视图弹簧插值随后，
+    /// 两相错位呈「整体先瞬移一截再向右展开」）。宽度是唯一动画量：内容 trailing 对齐 + clipped，
+    /// 宽度中间态内容贴槽右缘恒定、槽左缘平滑伸缩 = 「右缘固定、向左展开/收缩」（圆角钮及
+    /// 右侧全部钮、行右缘全程不动）。
+    /// 槽宽 0 时内容不渲染（clipped 只裁绘制不裁命中，必须 if 移除内容防隐形钮命中残留）；
+    /// 中间态内容超宽溢出向左被裁切（钮 frame 24 硬约束不被压缩）
+    private func revealSlot<Content: View>(width: CGFloat, @ViewBuilder content: () -> Content) -> some View {
+        ZStack(alignment: .trailing) {
+            if width > 0 {
+                content()
+                    .transition(.opacity)
+            }
+        }
+        .frame(width: width, height: 24)
+        .clipped()
     }
 
     /// 背景拖动层（挂 mainRow 的 .background、且必须挂 .glassEffect 之前——顺序语义见
@@ -1097,12 +1121,13 @@ private struct CaptureToolbar: View {
             )
     }
 
-    /// 当前色钮（24×24 命中区，内嵌 14pt 色圆点，无底色）：点击展开/收起色板面板。
+    /// 样式钮（24×24 命中区，内嵌当前色 14pt 圆点——colorDot 复用，白/黑自带 separator 描边）：
+    /// pen 系专用，点击开合「色板+粗细」合并样式面板（上行 8 色、下行 3 档粗细，见 panelsHost）。
     /// 面板不再挂本钮 overlay——玻璃容器会裁剪超出胶囊边界的命中（见 mainRow 注释），
     /// 改经 panelsHost 锚定槽浮于钮正上方（视觉与命中同几何）
-    private var currentColorButton: some View {
+    private var styleButton: some View {
         Button {
-            togglePanel(.color)
+            togglePanel(.style)
         } label: {
             colorDot(color)
                 .frame(width: 24, height: 24)
@@ -1111,9 +1136,8 @@ private struct CaptureToolbar: View {
         .buttonStyle(.plain)
     }
 
-    /// 当前粗细钮（24×24 命中区，内嵌 dotDiameter 实心圆点，无底色）：点击展开/收起粗细面板。
-    /// 面板内容按工具分支：普通工具 = 三档圆点；blur 工具 = 半径/笔宽双滑块（两行，~48 高）。
-    /// 面板同样改挂 panelsHost（玻璃外），命中不再被裁剪
+    /// 宽钮（24×24 命中区，内嵌 dotDiameter 实心圆点，无底色）：blur 工具专用，
+    /// 点击展开/收起半径/笔宽双滑块面板（挂 panelsHost，命中不被裁剪）
     private var currentWidthButton: some View {
         Button {
             togglePanel(.width)
@@ -1180,15 +1204,26 @@ private struct CaptureToolbar: View {
     @ViewBuilder
     private var panelsHost: some View {
         GeometryReader { _ in
-            if showColorPalette, tool != .select, tool != .blur,
-               let anchorX = panelAnchors[PanelID.color.rawValue] {
+            if showStylePanel, tool != .select, tool != .blur,
+               let anchorX = panelAnchors[PanelID.style.rawValue] {
                 panelSlot(anchorX: anchorX) {
-                    panelCapsule {
-                        HStack(spacing: 6) {
-                            ForEach(Array(RGBA.palette.enumerated()), id: \.offset) { _, c in
-                                colorSwatch(c) { showColorPalette = false }
+                    // 色板+粗细合并样式面板（两行 VStack，同 blur 双滑块面板节奏）：
+                    // 上行 8 色板（当前色 ring）、下行 3 档粗细（当前档 ring）；
+                    // 选色/选档即时生效不收起——收起沿用现有交互（点样式钮 / 互斥切面板）
+                    panelCapsuleAdaptive {
+                        VStack(spacing: 6) {
+                            HStack(spacing: 6) {
+                                ForEach(Array(RGBA.palette.enumerated()), id: \.offset) { _, c in
+                                    colorSwatch(c) { }
+                                }
+                            }
+                            HStack(spacing: 6) {
+                                ForEach(AnnotationWidth.allCases, id: \.pt) { w in
+                                    widthButton(w) { }
+                                }
                             }
                         }
+                        .foregroundStyle(.primary)
                     }
                     .offset(y: panelAnchorOffset)
                 }
@@ -1280,7 +1315,7 @@ private struct CaptureToolbar: View {
     /// 面板开关的读取/写入单一出口（互斥逻辑经 PanelID 寻址，不写三份 if）
     private func isOpen(_ id: PanelID) -> Bool {
         switch id {
-        case .color: showColorPalette
+        case .style: showStylePanel
         case .width: showWidthPicker
         case .radius: showRadiusSlider
         }
@@ -1288,7 +1323,7 @@ private struct CaptureToolbar: View {
 
     private func setPanel(_ id: PanelID, _ value: Bool) {
         switch id {
-        case .color: showColorPalette = value
+        case .style: showStylePanel = value
         case .width: showWidthPicker = value
         case .radius: showRadiusSlider = value
         }
