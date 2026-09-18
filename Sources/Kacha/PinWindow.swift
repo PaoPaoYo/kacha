@@ -39,8 +39,7 @@ final class PinPanel: NSPanel {
 /// 透明窗底直接透出，系统阴影按内容轮廓投影）。边缘 8pt 隐形拖拽区命中
 /// `PinGeometry.edge` → 方向光标 + 等比缩放（PinGeometry.resized，锚定对边/对角、
 /// 最小 64×64、不越屏）；内部拖动 = 移动窗口（不 clamp 屏缘，仅保证一条可回拖条带
-/// 留在屏内）；hover 显示左上 12pt 红点关闭钮；ESC（窗口 key 时，AppKit keyDown 兜底）
-/// 关闭。
+/// 留在屏内）；关闭仅 ESC（窗口 key 时，PinPanel.keyDown 直收，无关闭钮）。
 ///
 /// 拖动位移取 `NSEvent.mouseLocation` 相对起拖点的屏幕全局累计量：窗口自身随拖动
 /// 移动/缩放，视图局部坐标系跟着窗口走，SwiftUI translation 的「起点固定在窗口局部」
@@ -60,7 +59,6 @@ struct PinView: View {
     /// 等比缩放最小尺寸
     private static let minSize = CGSize(width: 64, height: 64)
 
-    @State private var hovering = false
     /// 进行中的拖拽方位：nil 且 moving = 移动；nil 且 !moving = 未拖拽
     @State private var dragEdge: PinEdge?
     @State private var moving = false
@@ -72,52 +70,26 @@ struct PinView: View {
 
     var body: some View {
         GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
-                Image(decorative: image, scale: 1)
-                    .resizable()
-                    .frame(width: geo.size.width, height: geo.size.height)
-
-                // 关闭钮仅 hover 渲染：未渲染即不可命中（等价 allowsHitTesting 仅 hover 为 true）
-                if hovering {
-                    closeButton
-                        .padding(6)
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .frame(width: geo.size.width, height: geo.size.height)
+                .coordinateSpace(name: "pin")
+                .contentShape(Rectangle())
+                .onContinuousHover(coordinateSpace: .named("pin")) { phase in
+                    switch phase {
+                    case .active(let point): hoverActive(at: point, size: geo.size)
+                    case .ended: hoverEnded()
+                    }
                 }
-            }
-            .coordinateSpace(name: "pin")
-            .contentShape(Rectangle())
-            .onContinuousHover(coordinateSpace: .named("pin")) { phase in
-                switch phase {
-                case .active(let point): hoverActive(at: point, size: geo.size)
-                case .ended: hoverEnded()
-                }
-            }
-            .gesture(dragGesture(size: geo.size))
-            .onExitCommand(perform: close)
+                .gesture(dragGesture(size: geo.size))
+                .onExitCommand(perform: close)
         }
-    }
-
-    /// 左上 12pt 红点关闭钮（NSWindow 关闭钮风格 #FF5F57，内含白色小叉提升辨识）
-    private var closeButton: some View {
-        Button(action: close) {
-            Circle()
-                .fill(Color(red: 1, green: 95.0 / 255.0, blue: 87.0 / 255.0))
-                .frame(width: 12, height: 12)
-                .overlay {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 7, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("关闭钉图")
     }
 
     // MARK: 悬停（光标切换）
 
     /// 边缘区（内 8pt）切方向光标，内部 arrow；拖拽进行中保持拖拽光标不随 hover 抖动
     private func hoverActive(at point: CGPoint, size: CGSize) {
-        hovering = true
         guard !moving else { return }
         let rect = CGRect(origin: .zero, size: size)
         if let edge = PinGeometry.edge(at: point, in: rect) {
@@ -128,7 +100,6 @@ struct PinView: View {
     }
 
     private func hoverEnded() {
-        hovering = false
         if !moving { NSCursor.arrow.set() }
     }
 
