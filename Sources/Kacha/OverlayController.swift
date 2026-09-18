@@ -17,10 +17,10 @@ extension Notification.Name {
 final class OverlayController {
     private var panels: [KeyablePanel] = []
 
-    /// 显示全部屏幕的覆盖窗；用户完成框选后回调裁剪好的图像、所选动作与选区 point 尺寸
-    /// （钉图开窗用）。windowsByScreen：各屏窗口矩形（本屏局部坐标、front-to-back），
-    /// 透传给各屏 SelectionView
-    func show(frames: [ScreenFrame], windowsByScreen: [CGDirectDisplayID: [CGRect]], onCapture: @escaping (CGImage, CaptureAction, CGSize) -> Void, onCancel: @escaping () -> Void) {
+    /// 显示全部屏幕的覆盖窗；用户完成框选后回调裁剪好的图像、所选动作与选区 AppKit 全局 frame
+    /// （屏局部 point 选区经 `PinWindowController.appkitFrame(fromLocal:on:)` 换算，钉图原位开窗用）。
+    /// windowsByScreen：各屏窗口矩形（本屏局部坐标、front-to-back），透传给各屏 SelectionView
+    func show(frames: [ScreenFrame], windowsByScreen: [CGDirectDisplayID: [CGRect]], onCapture: @escaping (CGImage, CaptureAction, CGRect) -> Void, onCancel: @escaping () -> Void) {
         dismissAll()
         NSApp.activate(ignoringOtherApps: true)
 
@@ -75,13 +75,15 @@ final class OverlayController {
     }
 
     /// 关闭全部覆盖窗 → 裁剪像素 → 标注合成 →（按需）圆角化 → 带动作回调（复制 / 保存 / 钉图共用裁剪链路）
-    private func handleConfirm(frame: ScreenFrame, pointRect: CGRect, cornerRadius: CGFloat, annotations: [Annotation], action: CaptureAction, onCapture: @escaping (CGImage, CaptureAction, CGSize) -> Void) {
+    private func handleConfirm(frame: ScreenFrame, pointRect: CGRect, cornerRadius: CGFloat, annotations: [Annotation], action: CaptureAction, onCapture: @escaping (CGImage, CaptureAction, CGRect) -> Void) {
         dismissAll()
         let pixelRect = SelectionGeometry.pixelRect(
             pointRect: pointRect,
             screenPointSize: frame.screenPointSize,
             imagePixelSize: frame.imagePixelSize
         )
+        // 选区屏局部 point 矩形（左上原点）→ AppKit 全局 frame（左下原点，钉图原位显示用）
+        let globalFrame = PinWindowController.appkitFrame(fromLocal: pointRect, on: frame.screen)
         if let cropped = frame.image.cropping(to: pixelRect) {
             // 标注先画进直角图（无标注时 renderer 原图直通），圆角化在其上 clip，
             // 保证「标注 + 圆角」并存时标注与底图一起被圆角裁切（与预览所见一致）
@@ -95,10 +97,10 @@ final class OverlayController {
                 // r == 0：零成本直通
                 output = composited
             }
-            onCapture(output, action, pointRect.size)
+            onCapture(output, action, globalFrame)
         } else {
             // 像素矩形越界（理论不该发生，pixelRect 已 clamp）：退回整帧
-            onCapture(frame.image, action, pointRect.size)
+            onCapture(frame.image, action, globalFrame)
         }
     }
 

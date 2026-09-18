@@ -1,9 +1,14 @@
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 
-/// 钉图面板：borderless 浮动置顶、可 key（ESC 关闭依赖）、跨 Space 常驻、透明底。
+/// 钉图面板：borderless 浮动置顶、可 key（ESC 关闭依赖）、跨 Space 常驻、透明底、系统阴影。
 /// 点击即激活成为 key window（设计 §2.5 的取舍：ESC 语义依赖 key，不避让其他窗口焦点）
 final class PinPanel: NSPanel {
+    /// ESC 关窗（window key 时）：AppKit 直收，不依赖 SwiftUI 焦点路由。
+    /// PinView 的 onExitCommand 为另一路径，二者先到先关（controller.remove 幂等）
+    var onCloseHotkey: (() -> Void)?
+
     override var canBecomeKey: Bool { true }
 
     init(contentRect: CGRect) {
@@ -17,16 +22,25 @@ final class PinPanel: NSPanel {
         backgroundColor = .clear
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         hidesOnDeactivate = false
-        hasShadow = false   // 设计 §5 YAGNI：不加阴影
+        hasShadow = true   // 系统窗口阴影（替代描边）；透明圆角内容按内容轮廓投影
         isReleasedWhenClosed = false   // 关闭统一走 orderOut + 引用移除，防隐式 close 释放
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == UInt16(kVK_Escape) {
+            onCloseHotkey?()
+        } else {
+            super.keyDown(with: event)
+        }
     }
 }
 
 /// 钉图窗口内容：最终合成图（标注 + 圆角）按窗口尺寸显示（合成图自带透明圆角，
-/// 透明窗底直接透出）。边缘 8pt 隐形拖拽区命中 `PinGeometry.edge` → 方向光标 +
-/// 等比缩放（PinGeometry.resized，锚定对边/对角、最小 64×64、不越屏）；
-/// 内部拖动 = 移动窗口（不 clamp 屏缘，仅保证一条可回拖条带留在屏内）；
-/// hover 显示右上 16pt 玻璃关闭钮；ESC（窗口 key 时）关闭。
+/// 透明窗底直接透出，系统阴影按内容轮廓投影）。边缘 8pt 隐形拖拽区命中
+/// `PinGeometry.edge` → 方向光标 + 等比缩放（PinGeometry.resized，锚定对边/对角、
+/// 最小 64×64、不越屏）；内部拖动 = 移动窗口（不 clamp 屏缘，仅保证一条可回拖条带
+/// 留在屏内）；hover 显示左上 12pt 红点关闭钮；ESC（窗口 key 时，AppKit keyDown 兜底）
+/// 关闭。
 ///
 /// 拖动位移取 `NSEvent.mouseLocation` 相对起拖点的屏幕全局累计量：窗口自身随拖动
 /// 移动/缩放，视图局部坐标系跟着窗口走，SwiftUI translation 的「起点固定在窗口局部」
@@ -58,7 +72,7 @@ struct PinView: View {
 
     var body: some View {
         GeometryReader { geo in
-            ZStack(alignment: .topTrailing) {
+            ZStack(alignment: .topLeading) {
                 Image(decorative: image, scale: 1)
                     .resizable()
                     .frame(width: geo.size.width, height: geo.size.height)
@@ -77,23 +91,25 @@ struct PinView: View {
                 case .ended: hoverEnded()
                 }
             }
-            .focusable()
             .gesture(dragGesture(size: geo.size))
             .onExitCommand(perform: close)
         }
     }
 
-    /// 右上 16pt 液态玻璃圆钮（xmark）
+    /// 左上 12pt 红点关闭钮（NSWindow 关闭钮风格 #FF5F57，内含白色小叉提升辨识）
     private var closeButton: some View {
         Button(action: close) {
-            Image(systemName: "xmark")
-                .font(.system(size: 8, weight: .bold))
-                .foregroundStyle(.primary)
-                .frame(width: 16, height: 16)
+            Circle()
+                .fill(Color(red: 1, green: 95.0 / 255.0, blue: 87.0 / 255.0))
+                .frame(width: 12, height: 12)
+                .overlay {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(.white)
+                }
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .glassEffect(in: Circle())
         .accessibilityLabel("关闭钉图")
     }
 
@@ -167,6 +183,8 @@ struct PinView: View {
                 minSize: Self.minSize,
                 bounds: screen.frame.size)
             panel.setFrame(PinWindowController.appkitFrame(fromLocal: newLocal, on: screen), display: false)
+            // 透明异形窗的阴影轮廓需在尺寸变化后重采样（移动不变形，无需重算）
+            panel.invalidateShadow()
         } else {
             // 移动不 clamp 屏缘（可拖出），仅保证 grabStrip 宽条带留在屏内可回拖
             let x = min(max(startLocal.minX + dx, -startLocal.width + Self.grabStrip),
@@ -194,30 +212,33 @@ final class PinWindowController {
 
     private var panels: [PinPanel] = []
 
-    /// 钉图开窗：pointSize 等比 clamp 到目标屏内、屏中放置，makeKeyAndOrderFront 纳入管理。
-    /// 目标屏 = 光标所在屏（钉图瞬间光标即选区所在屏，NSScreen.screens 含 frame 检查），
-    /// 无命中回退主屏；无屏/无效尺寸不开窗（理论不发生）
-    func pin(_ image: CGImage, pointSize: CGSize) {
-        guard pointSize.width > 0, pointSize.height > 0,
-              let screen = cursorScreen() else { return }
-        let screenBounds = screen.frame.size
+    /// 钉图开窗：显示在选区原位置（`frame` = 选区的 AppKit 全局矩形，由 OverlayController
+    /// 经 `appkitFrame(fromLocal:on:)` 从屏局部 point 选区换算而来）。尺寸等比 clamp 目标屏内
+    /// （保比例整体缩小、不变形），位置仍贴选区原位、clamp 使窗口完整落在所在屏内；
+    /// makeKeyAndOrderFront 纳入管理。目标屏 = 含选区中心的屏（NSScreen.screens 含 frame 检查），
+    /// 无命中回退主屏；无效尺寸/无屏不开窗（理论不发生）
+    func pin(_ image: CGImage, frame: CGRect) {
+        guard frame.width > 0, frame.height > 0,
+              let screen = Self.containingScreen(for: frame) ?? NSScreen.main else { return }
+        let screenFrame = screen.frame
         // 等比 clamp：超屏按比例整体缩小（短边约束生效），不变形
-        let scale = min(1, screenBounds.width / pointSize.width, screenBounds.height / pointSize.height)
-        let size = CGSize(width: pointSize.width * scale, height: pointSize.height * scale)
-        // 屏中放置（屏局部 CG 坐标，居中本身即屏内）
-        let local = CGRect(
-            x: (screenBounds.width - size.width) / 2,
-            y: (screenBounds.height - size.height) / 2,
-            width: size.width, height: size.height)
+        let scale = min(1, screenFrame.width / frame.width, screenFrame.height / frame.height)
+        let size = CGSize(width: frame.width * scale, height: frame.height * scale)
+        // 位置贴选区原位，逐轴 clamp 到所在屏内（缩放后必能完整放下）
+        let origin = CGPoint(
+            x: min(max(frame.minX, screenFrame.minX), screenFrame.maxX - size.width),
+            y: min(max(frame.minY, screenFrame.minY), screenFrame.maxY - size.height))
 
-        let panel = PinPanel(contentRect: Self.appkitFrame(fromLocal: local, on: screen))
+        let panel = PinPanel(contentRect: CGRect(origin: origin, size: size))
+        // self 是常驻单例（shared），强持有无副作用；panel weak 防止已关窗误触发
+        let close = { [weak panel] in
+            if let panel { self.remove(panel) }
+        }
+        panel.onCloseHotkey = close
         let view = PinView(
             image: image,
-            aspect: pointSize.width / pointSize.height,
-            close: { [weak panel] in
-                // self 是常驻单例（shared），强持有无副作用；panel weak 防止已关窗误触发
-                if let panel { self.remove(panel) }
-            },
+            aspect: frame.width / frame.height,
+            close: close,
             panel: panel)
         let hosting = NSHostingView(rootView: view)
         hosting.frame = panel.contentView?.bounds ?? CGRect(origin: .zero, size: size)
@@ -243,12 +264,6 @@ final class PinWindowController {
     }
 
     // MARK: 坐标换算（AppKit 全局左下原点 ↔ 屏局部 CG 左上原点）
-
-    /// 光标所在屏：mouseLocation 命中 screens 某屏 frame，否则主屏
-    private func cursorScreen() -> NSScreen? {
-        let mouse = NSEvent.mouseLocation
-        return NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
-    }
 
     /// 各屏 AppKit frame.maxY 的最大值（AppKit ↔ CG 全局换算基准，同 WindowGeometry 约定）
     private static var totalHeight: CGFloat {
