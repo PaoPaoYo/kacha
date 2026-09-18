@@ -55,8 +55,18 @@ final class HotKeyPreferencesTests: XCTestCase {
         XCTAssertEqual(preferences.displayString, "⌥⇧S")
     }
 
+    func test_displayStringUsesFallbackForReturnKey() {
+        let preferences = HotKeyPreferences(keyCode: UInt32(kVK_Return), modifiers: UInt32(cmdKey))
+
+        XCTAssertEqual(preferences.displayString, "⌘↩")
+    }
+
     func test_isValidCombinationRejectsNoModifiers() {
         XCTAssertFalse(HotKeyPreferences.isValidCombination(modifiers: 0))
+    }
+
+    func test_isValidCombinationRejectsShiftOnly() {
+        XCTAssertFalse(HotKeyPreferences.isValidCombination(modifiers: UInt32(shiftKey)))
     }
 
     func test_isValidCombinationAcceptsCommandModifier() {

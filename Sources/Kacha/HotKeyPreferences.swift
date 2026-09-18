@@ -17,6 +17,8 @@ struct HotKeyPreferences: Equatable {
     }
 
     private var localizedKeyName: String {
+        if let specialKeyName { return specialKeyName }
+
         guard let inputSource = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
               let layoutData = TISGetInputSourceProperty(inputSource, kTISPropertyUnicodeKeyLayoutData) else {
             return ""
@@ -42,6 +44,22 @@ struct HotKeyPreferences: Equatable {
         )
         guard status == noErr else { return "" }
         return String(utf16CodeUnits: characters, count: length).uppercased()
+    }
+
+    private var specialKeyName: String? {
+        switch Int(keyCode) {
+        case kVK_Return: "↩"
+        case kVK_Tab: "⇥"
+        case kVK_Space: "Space"
+        case kVK_Delete: "⌫"
+        case kVK_ForwardDelete: "⌦"
+        case kVK_Escape: "⎋"
+        case kVK_LeftArrow: "←"
+        case kVK_RightArrow: "→"
+        case kVK_UpArrow: "↑"
+        case kVK_DownArrow: "↓"
+        default: nil
+        }
     }
 
     static func isValidCombination(modifiers: UInt32) -> Bool {
