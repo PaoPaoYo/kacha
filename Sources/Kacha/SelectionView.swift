@@ -14,6 +14,8 @@ struct SelectionView: View {
     let onConfirm: (CGRect, CGFloat, [Annotation]) -> Void
     /// 保存时回调：屏幕局部 point 选区（有效性已过滤）+ 圆角半径（point，0 = 直角）+ 已完成标注
     let onSave: (CGRect, CGFloat, [Annotation]) -> Void
+    /// 钉图时回调：屏幕局部 point 选区（有效性已过滤）+ 圆角半径（point，0 = 直角）+ 已完成标注
+    let onPin: (CGRect, CGFloat, [Annotation]) -> Void
     let onCancel: () -> Void
 
     private enum Phase {
@@ -331,6 +333,12 @@ struct SelectionView: View {
         onSave(selection, CGFloat(cornerRadius), annotations)
     }
 
+    /// 钉图（守卫同 confirm/save）
+    private func pin() {
+        guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection) else { return }
+        onPin(selection, CGFloat(cornerRadius), annotations)
+    }
+
     /// 撤销最后一笔标注（工具栏撤销钮 / ⌘Z）：空栈无操作（撤销钮空栈时整钮不渲染）
     private func undoLastAnnotation() {
         if !annotations.isEmpty {
@@ -474,7 +482,7 @@ struct SelectionView: View {
     /// 选区右下角单行工具栏：锚定跟随（toolbarPosition == nil，紧贴选区右下、随选区移动）或
     /// 自由绝对位置（拖动后 toolbarPosition 非 nil，不随选区移动/缩放、不 clamp 屏缘，
     /// 保持到下次截图会话重置）：
-    /// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细][圆角]（按工具显隐）‖ [撤销]（空栈隐藏）‖ [保存][复制]；
+    /// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [当前色][当前粗细][圆角]（按工具显隐）‖ [撤销]（空栈隐藏）‖ [钉图][保存][复制]；
     /// 色板/粗细/圆角面板为触发钮 overlay（浮于钮正上方、可盖选区、不占布局）。
     /// 锚定点/光标带基底见 toolbarRowLayout 单一公式源。
     /// 独立成方法：主 body 过大触发编译器「unable to type-check in reasonable time」，拆块缓解
@@ -500,6 +508,7 @@ struct SelectionView: View {
                        canUndo: !annotations.isEmpty,
                        onUndo: undoLastAnnotation,
                        onSave: save,
+                       onPin: pin,
                        onCopy: confirm)
         // 拖动经玻璃块背景层（拖非按钮的空白像素；按钮/滑块命中优先、不下落）；
         // 拖动中轻微放大反馈。不加 hover 光标——applyCursor monitor 的 mouseMoved
@@ -674,10 +683,10 @@ struct SelectionView: View {
     /// 时组底缘 sel.maxY + 38（主行中心 sel.maxY + 21），否则收进选区内侧组底缘 sel.maxY - 4
     /// （主行 34pt 高：底部留 4pt，主体伸入选区内 38pt）。
     static func toolbarRowLayout(sel: CGRect, bounds: CGSize) -> (right: CGFloat, bottom: CGFloat, row: CGRect) {
-        // 玻璃胶囊实际宽：全显（pen 系 + 撤销栈非空）≈405（工具 6×24+5×6 ＋ 分隔 1
-        // ＋ 样式钮 24 ＋ 圆角钮 48 ＋ 分隔 1 ＋ 撤销 24 ＋ 分隔 1 ＋ 保存钮 24 ＋ 复制钮 24
-        // ＋ 9×8 段间距 ＋ 胶囊水平留白 10×2）；select 态最窄（样式/撤销隐藏）≈283，blur 态 ≈364，
-        // 均被保守覆盖；常量保留 482（历史值，全显宽 + 约 77pt 容差）——仅用于锚定初始位置的
+        // 玻璃胶囊实际宽：全显（pen 系 + 撤销栈非空）≈437（工具 6×24+5×6 ＋ 分隔 1
+        // ＋ 样式钮 24 ＋ 圆角钮 48 ＋ 分隔 1 ＋ 撤销 24 ＋ 分隔 1 ＋ 钉图钮 24 ＋ 保存钮 24 ＋ 复制钮 24
+        // ＋ 10×8 段间距 ＋ 胶囊水平留白 10×2）；select 态最窄（样式/撤销隐藏）≈315，blur 态 ≈396，
+        // 均被保守覆盖；常量保留 482（历史值，全显宽 + 约 45pt 容差）——仅用于锚定初始位置的
         // 左缘保护与光标带基底（偏保守只影响带略宽/锚点略右，无正确性问题）；实际渲染用右下角
         // 锚点 pin + offset，不依赖该估算。
         let rowWidth: CGFloat = 482
@@ -958,7 +967,7 @@ private struct PanelAnchorKey: PreferenceKey {
 }
 
 /// 选区右下角单行工具栏（整体液态玻璃胶囊 ~34pt + 收起式弹出面板）：
-/// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [样式钮]（pen 系，按工具显隐；blur 显 [宽钮]）[圆角] ‖ [撤销]（空栈隐藏）‖ [保存][复制]。
+/// [选择|箭头|矩形|椭圆|画笔|模糊] ‖ [样式钮]（pen 系，按工具显隐；blur 显 [宽钮]）[圆角] ‖ [撤销]（空栈隐藏）‖ [钉图][保存][复制]。
 /// 视觉重构：整行包进单一 glassEffect(in: Capsule())（左右留白 10 / 上下 5，高 24+10=34），
 /// 钮全部无底色。样式（色板+粗细合并双层面板）/blur 双滑块面板为 16pt 圆角玻璃矩形、
 /// 圆角面板为玻璃胶囊（偏矮小，胶囊合适），
@@ -997,6 +1006,7 @@ private struct CaptureToolbar: View {
     let canUndo: Bool
     let onUndo: () -> Void
     let onSave: () -> Void
+    let onPin: () -> Void
     let onCopy: () -> Void
 
     /// 面板锚定偏移（锚定槽 overlay alignment .bottom 上再 offset，四个面板统一一个 slot）：
@@ -1116,7 +1126,12 @@ private struct CaptureToolbar: View {
             }
             // 保存/复制段的左分隔符（恒定）：撤销槽收起时仍在，保证动作段始终有左分隔
             separator
-            // 动作钮：与其他钮统一 24×24 无底色纯图标规格（无选中态），accessibilityLabel 保可读性
+            // 动作钮：与其他钮统一 24×24 无底色纯图标规格（无选中态），accessibilityLabel 保可读性；
+            // 钉图钮固定在保存钮左（V4）
+            ToolbarIconButton(symbol: "pin",
+                              selected: false,
+                              accessibilityLabel: "钉图",
+                              action: onPin)
             ToolbarIconButton(symbol: "square.and.arrow.down",
                               selected: false,
                               accessibilityLabel: "保存",

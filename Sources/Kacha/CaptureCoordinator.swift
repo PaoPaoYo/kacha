@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-/// 串联整个截图流程：热键/菜单 → 抓帧 → 覆盖窗 → 剪贴板/文件
+/// 串联整个截图流程：热键/菜单 → 抓帧 → 覆盖窗 → 剪贴板/文件/钉图
 @MainActor
 final class CaptureCoordinator {
     static let shared = CaptureCoordinator()
@@ -17,13 +17,17 @@ final class CaptureCoordinator {
 
         do {
             let session = try await captureService.captureSession()
-            overlay.show(frames: session.frames, windowsByScreen: session.windowsByScreen, onCapture: { image, action in
+            overlay.show(frames: session.frames, windowsByScreen: session.windowsByScreen, onCapture: { image, action, pointSize in
                 switch action {
                 case .copy:
                     ClipboardService.write(image)
                     NSSound(named: NSSound.Name("Tink"))?.play()
                 case .save:
                     self.saveToFile(image)
+                case .pin:
+                    // 合成链路同复制/保存（OverlayController 已裁剪+标注+圆角），此处只管开钉图窗
+                    PinWindowController.shared.pin(image, pointSize: pointSize)
+                    NSSound(named: NSSound.Name("Tink"))?.play()
                 }
             }, onCancel: {})
         } catch CaptureError.noPermission {

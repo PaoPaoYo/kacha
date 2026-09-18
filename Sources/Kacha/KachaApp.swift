@@ -52,6 +52,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    /// app 终止全清钉图窗（orderOut + 释放引用）
+    func applicationWillTerminate(_ notification: Notification) {
+        PinWindowController.shared.closeAll()
+    }
+
     /// 开关开机自启：register/unregister 失败被吞掉后必须回读系统 status 修正镜像，避免静默错位
     func setLaunchAtLogin(_ enabled: Bool) {
         let service = SMAppService.mainApp

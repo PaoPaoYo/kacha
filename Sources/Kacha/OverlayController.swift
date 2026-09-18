@@ -1,10 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// 用户完成框选后的动作：复制到剪贴板 / 保存为文件
+/// 用户完成框选后的动作：复制到剪贴板 / 保存为文件 / 钉成置顶图钉
 enum CaptureAction {
     case copy
     case save
+    case pin
 }
 
 /// 覆盖窗全部关闭的广播：SelectionView 借此立即移除自身的 NSEvent monitor（防泄漏）
@@ -16,9 +17,10 @@ extension Notification.Name {
 final class OverlayController {
     private var panels: [KeyablePanel] = []
 
-    /// 显示全部屏幕的覆盖窗；用户完成框选后回调裁剪好的图像与所选动作。
-    /// windowsByScreen：各屏窗口矩形（本屏局部坐标、front-to-back），透传给各屏 SelectionView
-    func show(frames: [ScreenFrame], windowsByScreen: [CGDirectDisplayID: [CGRect]], onCapture: @escaping (CGImage, CaptureAction) -> Void, onCancel: @escaping () -> Void) {
+    /// 显示全部屏幕的覆盖窗；用户完成框选后回调裁剪好的图像、所选动作与选区 point 尺寸
+    /// （钉图开窗用）。windowsByScreen：各屏窗口矩形（本屏局部坐标、front-to-back），
+    /// 透传给各屏 SelectionView
+    func show(frames: [ScreenFrame], windowsByScreen: [CGDirectDisplayID: [CGRect]], onCapture: @escaping (CGImage, CaptureAction, CGSize) -> Void, onCancel: @escaping () -> Void) {
         dismissAll()
         NSApp.activate(ignoringOtherApps: true)
 
@@ -40,6 +42,8 @@ final class OverlayController {
                 self?.handleConfirm(frame: frame, pointRect: pointRect, cornerRadius: cornerRadius, annotations: annotations, action: .copy, onCapture: onCapture)
             } onSave: { [weak self] pointRect, cornerRadius, annotations in
                 self?.handleConfirm(frame: frame, pointRect: pointRect, cornerRadius: cornerRadius, annotations: annotations, action: .save, onCapture: onCapture)
+            } onPin: { [weak self] pointRect, cornerRadius, annotations in
+                self?.handleConfirm(frame: frame, pointRect: pointRect, cornerRadius: cornerRadius, annotations: annotations, action: .pin, onCapture: onCapture)
             } onCancel: { [weak self] in
                 self?.dismissAll()
                 onCancel()
@@ -70,8 +74,8 @@ final class OverlayController {
         panels.removeAll()
     }
 
-    /// 关闭全部覆盖窗 → 裁剪像素 → 标注合成 →（按需）圆角化 → 带动作回调（复制 / 保存共用裁剪链路）
-    private func handleConfirm(frame: ScreenFrame, pointRect: CGRect, cornerRadius: CGFloat, annotations: [Annotation], action: CaptureAction, onCapture: @escaping (CGImage, CaptureAction) -> Void) {
+    /// 关闭全部覆盖窗 → 裁剪像素 → 标注合成 →（按需）圆角化 → 带动作回调（复制 / 保存 / 钉图共用裁剪链路）
+    private func handleConfirm(frame: ScreenFrame, pointRect: CGRect, cornerRadius: CGFloat, annotations: [Annotation], action: CaptureAction, onCapture: @escaping (CGImage, CaptureAction, CGSize) -> Void) {
         dismissAll()
         let pixelRect = SelectionGeometry.pixelRect(
             pointRect: pointRect,
@@ -91,10 +95,10 @@ final class OverlayController {
                 // r == 0：零成本直通
                 output = composited
             }
-            onCapture(output, action)
+            onCapture(output, action, pointRect.size)
         } else {
             // 像素矩形越界（理论不该发生，pixelRect 已 clamp）：退回整帧
-            onCapture(frame.image, action)
+            onCapture(frame.image, action, pointRect.size)
         }
     }
 
