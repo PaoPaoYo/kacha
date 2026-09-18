@@ -6,9 +6,14 @@ import SwiftUI
 @main
 struct KachaApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
 
     var body: some Scene {
-        MenuBarExtra("咔嚓", systemImage: "camera.viewfinder") {
+        Settings {
+            SettingsView(appDelegate: appDelegate)
+        }
+
+        MenuBarExtra("咔嚓", systemImage: "camera.viewfinder", isInserted: $showMenuBarIcon) {
             MenuContent(appDelegate: appDelegate)
         }
     }
@@ -18,19 +23,14 @@ struct KachaApp: App {
 /// 开机自启开关回读修正后菜单项能即时刷新
 private struct MenuContent: View {
     @ObservedObject var appDelegate: AppDelegate
-
     var body: some View {
         Button("截屏  ⌃⌘A") {
             Task { await CaptureCoordinator.shared.start() }
         }
         Divider()
-        Toggle(
-            "开机自启",
-            isOn: Binding(
-                get: { appDelegate.launchAtLogin },
-                set: { appDelegate.setLaunchAtLogin($0) }
-            )
-        )
+        SettingsLink {
+            Text("设置…")
+        }
         Divider()
         Button("退出") {
             NSApp.terminate(nil)
@@ -38,18 +38,33 @@ private struct MenuContent: View {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
-    /// 唯一事实源是 SMAppService.mainApp.status；此属性仅为菜单渲染镜像
-    @Published private(set) var launchAtLogin: Bool = false
+    /// 唯一事实源是 SMAppService.mainApp.status；此属性仅为设置视图渲染镜像
+    @Published private(set) var launchAtLogin = false
+    @Published private(set) var hotKeyPreferences = HotKeyPreferences.defaultHotKey
+
+    override init() {
+        UserDefaults.standard.register(defaults: ["showMenuBarIcon": true])
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
-        HotKeyCenter.shared.register(
-            keyCode: UInt32(kVK_ANSI_A),
-            modifiers: UInt32(controlKey | cmdKey)
-        ) {
-            Task { await CaptureCoordinator.shared.start() }
+        hotKeyPreferences = HotKeyPreferences.load()
+        registerHotKey()
+
+        if !UserDefaults.standard.bool(forKey: "hasLaunchedOnce") {
+            UserDefaults.standard.set(true, forKey: "hasLaunchedOnce")
+            openSettings()
         }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !UserDefaults.standard.bool(forKey: "showMenuBarIcon") else { return true }
+        openSettings()
+        NSApp.activate(ignoringOtherApps: true)
+        return true
     }
 
     /// app 终止全清钉图窗（orderOut + 释放引用）
@@ -66,5 +81,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             try? service.unregister()
         }
         launchAtLogin = (service.status == .enabled)
+    }
+
+    func updateHotKey(_ preferences: HotKeyPreferences) {
+        preferences.save()
+        hotKeyPreferences = preferences
+        registerHotKey()
+    }
+
+    private func registerHotKey() {
+        HotKeyCenter.shared.register(
+            keyCode: hotKeyPreferences.keyCode,
+            modifiers: hotKeyPreferences.modifiers
+        ) {
+            Task { await CaptureCoordinator.shared.start() }
+        }
+    }
+
+    private func openSettings() {
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 }
