@@ -34,3 +34,10 @@
 ## 5. 不做（YAGNI）
 
 - 钉图再标注/编辑、阴影效果、多钉图对齐吸附、钉图内容实时刷新
+
+## 6. 冒烟期迭代追加（2026-09-18）
+
+- **原位显示**：钉图窗口初始位置 = 选区原位置（屏局部 → AppKit 全局换算经 PinWindow.appkitFrame），等比 clamp 屏内
+- **阴影替边框**：移除视觉描边与 `.focusable()`（其聚焦描边即蓝边来源）；`hasShadow = true` 系统窗口阴影（缩放后 invalidateShadow 重采样）；ESC 由 PinPanel.keyDown 直收（不依赖 SwiftUI 焦点路由）
+- **关闭方式仅 ESC**：红灯关闭钮已按作者要求移除；点击钉图获焦 → ESC 关闭（keyDown + onExitCommand 双路径）
+- **工具栏光标排除**：工具栏（含自由拖动位置）矩形区域内光标一律默认箭头（CursorState.toolbarRect 快照，selection/toolbarPosition 双源同步），不再透出选区样式
