@@ -12,32 +12,43 @@ final class HotKeyCenter {
     private var handlerRef: EventHandlerRef?
 
     func register(keyCode: UInt32, modifiers: UInt32, action: @escaping () -> Void) {
+        unregister()
         Self.action = action
 
-        var spec = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
-        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ -> OSStatus in
-            var id = EventHotKeyID()
-            GetEventParameter(
-                event,
-                EventParamName(kEventParamDirectObject),
-                EventParamType(typeEventHotKeyID),
-                nil,
-                MemoryLayout<EventHotKeyID>.size,
-                nil,
-                &id
+        if handlerRef == nil {
+            var spec = EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
             )
-            guard id.signature == HotKeyCenter.signature else { return noErr }
-            // Carbon 热键在主事件循环（主线程）派发
-            MainActor.assumeIsolated {
-                HotKeyCenter.action?()
-            }
-            return noErr
-        }, 1, &spec, nil, &handlerRef)
+            InstallEventHandler(GetApplicationEventTarget(), { _, event, _ -> OSStatus in
+                var id = EventHotKeyID()
+                GetEventParameter(
+                    event,
+                    EventParamName(kEventParamDirectObject),
+                    EventParamType(typeEventHotKeyID),
+                    nil,
+                    MemoryLayout<EventHotKeyID>.size,
+                    nil,
+                    &id
+                )
+                guard id.signature == HotKeyCenter.signature else { return noErr }
+                // Carbon 热键在主事件循环（主线程）派发
+                MainActor.assumeIsolated {
+                    HotKeyCenter.action?()
+                }
+                return noErr
+            }, 1, &spec, nil, &handlerRef)
+        }
 
         let hotKeyID = EventHotKeyID(signature: Self.signature, id: 1)
         RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
+    }
+
+    func unregister() {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
+        }
+        Self.action = nil
     }
 }
