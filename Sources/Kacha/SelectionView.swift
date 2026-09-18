@@ -157,7 +157,7 @@ struct SelectionView: View {
                 return .handled
             }
             .onExitCommand(perform: onCancel)
-            .onAppear { installCursorState(height: geo.size.height) }
+            .onAppear { installCursorState(bounds: geo.size) }
             .onReceive(NotificationCenter.default.publisher(for: .kachaOverlayDismissed)) { _ in
                 // 覆盖窗被 dismissAll 关闭时立即清 monitor（防泄漏）；onDisappear 仅作兜底
                 removeCursorMonitor()
@@ -237,15 +237,24 @@ struct SelectionView: View {
             }
     }
 
-    /// 面板展开光标带同步（selection / 面板开关 / toolbarPosition 三类 onChange 源共用）；
-    /// 自由位置模式把行矩形按「渲染锚点位移」（position − 锚定点）平移，锚定跟随 = .zero；
-    /// 面板全收起时 panelBand 公式自回 .zero
+    /// 光标矩形同步（selection / 面板开关 / toolbarPosition 三类 onChange 源共用，沿用
+    /// syncPanelBand 管道）：① toolbarRect = 工具栏行矩形（含手动拖动的渲染位移——
+    /// 「渲染锚点位移」（position − 锚定点）平移，锚定跟随 = .zero 位移；锚定与自由两态
+    /// 同源），工具栏是浮层，拖入选区内部后其区域光标仍应一律箭头（不透出选区样式）；
+    /// ② panelBand = 面板展开光标带（行矩形向上扩 60，面板全收起时公式自回 .zero）。
+    /// 无有效选区时两者均 .zero（工具栏未渲染，不拦光标）
     private func syncPanelBand(sel: CGRect?, bounds: CGSize) {
         var drag: CGSize = .zero
-        if let p = toolbarPosition, let sel, SelectionGeometry.isValid(sel) {
+        var row: CGRect = .zero
+        if let sel, SelectionGeometry.isValid(sel) {
             let g = Self.toolbarRowLayout(sel: sel, bounds: bounds)
-            drag = CGSize(width: p.x - g.right, height: p.y - g.bottom)
+            row = g.row
+            if let p = toolbarPosition {
+                drag = CGSize(width: p.x - g.right, height: p.y - g.bottom)
+                row = row.offsetBy(dx: drag.width, dy: drag.height)
+            }
         }
+        cursorState.toolbarRect = row
         cursorState.panelBand = Self.panelBand(
             sel: sel, bounds: bounds,
             anyPanelOpen: showStylePanel || showWidthPicker || showRadiusSlider,
@@ -253,12 +262,14 @@ struct SelectionView: View {
     }
 
     /// 光标快照初始化 + 安装单一决策点 monitor（替代 cursorRect / onHover 方案）
-    private func installCursorState(height: CGFloat) {
-        cursorState.viewHeight = height
+    private func installCursorState(bounds: CGSize) {
+        cursorState.viewHeight = bounds.height
         cursorState.selection = selection
         cursorState.hasSelection = SelectionGeometry.isValid(selection)
         cursorState.tool = activeTool
         cursorState.blurWidth = CGFloat(blurPenWidth)
+        // 光标矩形初值（appear 时选区未定，toolbarRect/panelBand 均 .zero）
+        syncPanelBand(sel: selection, bounds: bounds)
         cursorMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { event in
             Self.applyCursor(event: event, state: cursorState, screen: frame.screen)
             return event
@@ -726,6 +737,13 @@ struct SelectionView: View {
             NSCursor.crosshair.set()
             return
         }
+        // b''. 工具栏行矩形内一律箭头：工具栏是浮层，被拖入选区内部后不能透出选区样式
+        // （开掌/合掌/绘制十字/blur 圆环都在此拦截；矩形含手动拖动位移，锚定/自由两态
+        // 同源见 syncPanelBand——默认锚定位置在选区外贴边，contains 不命中，现状不变）
+        if state.toolbarRect.contains(p) {
+            NSCursor.arrow.set()
+            return
+        }
         // b'. 面板展开期间：主行向上扩 60pt 的带内一律箭头（面板 overlay 常盖住选区，
         // 不透出角/边/选区光标——用户抱怨的「透到底底」即此）
         if state.panelBand.contains(p) {
@@ -817,6 +835,9 @@ private final class CursorState {
     var tool: AnnotationTool = .select
     /// 面板展开期间的光标带（主行矩形向上扩 60pt，见 panelBand）；全收起时 .zero
     var panelBand: CGRect = .zero
+    /// 工具栏行矩形（含手动拖动的渲染位移，锚定/自由两态同源，见 syncPanelBand）：
+    /// 矩形内光标一律箭头（工具栏浮层不透出选区样式）；无有效选区时 .zero
+    var toolbarRect: CGRect = .zero
     /// blur 工具笔刷光标直径（= blurPenWidth，实时跟随滑块）
     var blurWidth: CGFloat = 0
 }
