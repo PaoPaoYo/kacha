@@ -61,16 +61,6 @@ make install    # 打包并安装到 /Applications（自动退出旧实例）
 
 零第三方依赖——仅 SwiftUI / AppKit / ScreenCaptureKit / CoreImage / Carbon。
 
-## 🔬 技术亮点
-
-**macOS 26 `glassEffect` 容器三铁律**（开发中逐帧探针实证，详见 [spec](docs/superpowers/specs/2026-09-17-kacha-v3-annotations-design.md) §8）：
-
-1. 玻璃边界外的内容**命中被裁剪** —— 弹出面板须挂玻璃容器之外
-2. 容器**吞噬 preference 上溯** —— 锚点测量须由玻璃外不可见复刻层上报
-3. 容器**丢弃跨界动画事务** —— 显隐动画须 `TimelineView` 逐帧手动驱动真实布局
-
-其他考古发现也记录在各版 spec 中：`SCShareableContent.windows` 顺序未定义（用 `CGWindowList` 真 Z 序）、`screencapture -D` 接受序号而非 displayID、`NSScreen.displayID` 不存在等。
-
 ## 🗺️ 版本
 
 | 版本 | 内容 |
