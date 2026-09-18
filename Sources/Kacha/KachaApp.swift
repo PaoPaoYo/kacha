@@ -24,7 +24,7 @@ struct KachaApp: App {
 private struct MenuContent: View {
     @ObservedObject var appDelegate: AppDelegate
     var body: some View {
-        Button("截屏  ⌃⌘A") {
+        Button("截屏  \(appDelegate.hotKeyPreferences.displayString)") {
             Task { await CaptureCoordinator.shared.start() }
         }
         Divider()
@@ -43,6 +43,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// 唯一事实源是 SMAppService.mainApp.status；此属性仅为设置视图渲染镜像
     @Published private(set) var launchAtLogin = false
     @Published private(set) var hotKeyPreferences = HotKeyPreferences.defaultHotKey
+    @Published private(set) var hotKeyErrorMessage: String?
+    private var hotKeyRegistration: HotKeyRegistrationCoordinator?
 
     override init() {
         UserDefaults.standard.register(defaults: ["showMenuBarIcon": true])
@@ -52,7 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func applicationDidFinishLaunching(_ notification: Notification) {
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
         hotKeyPreferences = HotKeyPreferences.load()
-        registerHotKey()
+        hotKeyRegistration = HotKeyRegistrationCoordinator(current: hotKeyPreferences)
+        registerInitialHotKey()
 
         if !UserDefaults.standard.bool(forKey: "hasLaunchedOnce") {
             UserDefaults.standard.set(true, forKey: "hasLaunchedOnce")
@@ -84,15 +87,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func updateHotKey(_ preferences: HotKeyPreferences) {
-        preferences.save()
-        hotKeyPreferences = preferences
-        registerHotKey()
+        guard let hotKeyRegistration else { return }
+
+        let didRegister = hotKeyRegistration.update(to: preferences) { candidate in
+            self.register(candidate)
+        }
+        hotKeyPreferences = hotKeyRegistration.current
+        hotKeyErrorMessage = hotKeyRegistration.errorMessage
+        if didRegister {
+            preferences.save()
+        }
     }
 
-    private func registerHotKey() {
+    private func registerInitialHotKey() {
+        guard let hotKeyRegistration else { return }
+
+        _ = hotKeyRegistration.registerInitial { preferences in
+            self.register(preferences)
+        }
+        hotKeyErrorMessage = hotKeyRegistration.errorMessage
+    }
+
+    private func register(_ preferences: HotKeyPreferences) -> Bool {
         HotKeyCenter.shared.register(
-            keyCode: hotKeyPreferences.keyCode,
-            modifiers: hotKeyPreferences.modifiers
+            keyCode: preferences.keyCode,
+            modifiers: preferences.modifiers
         ) {
             Task { await CaptureCoordinator.shared.start() }
         }

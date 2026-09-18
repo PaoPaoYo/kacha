@@ -21,11 +21,13 @@ struct HotKeyPreferences: Equatable {
 
         guard let inputSource = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
               let layoutData = TISGetInputSourceProperty(inputSource, kTISPropertyUnicodeKeyLayoutData) else {
-            return ""
+            return fallbackKeyName
         }
 
         let data = unsafeBitCast(layoutData, to: CFData.self)
-        guard let layout = CFDataGetBytePtr(data) else { return "" }
+        guard let layout = CFDataGetBytePtr(data) else { return fallbackKeyName }
+
+        guard keyCode <= UInt32(UInt16.max) else { return fallbackKeyName }
 
         var deadKeyState: UInt32 = 0
         var length = 0
@@ -42,7 +44,7 @@ struct HotKeyPreferences: Equatable {
             &length,
             &characters
         )
-        guard status == noErr else { return "" }
+        guard status == noErr, length > 0 else { return fallbackKeyName }
         return String(utf16CodeUnits: characters, count: length).uppercased()
     }
 
@@ -58,8 +60,36 @@ struct HotKeyPreferences: Equatable {
         case kVK_RightArrow: "→"
         case kVK_UpArrow: "↑"
         case kVK_DownArrow: "↓"
+        case kVK_Home: "Home"
+        case kVK_End: "End"
+        case kVK_PageUp: "Page Up"
+        case kVK_PageDown: "Page Down"
+        case kVK_F1: "F1"
+        case kVK_F2: "F2"
+        case kVK_F3: "F3"
+        case kVK_F4: "F4"
+        case kVK_F5: "F5"
+        case kVK_F6: "F6"
+        case kVK_F7: "F7"
+        case kVK_F8: "F8"
+        case kVK_F9: "F9"
+        case kVK_F10: "F10"
+        case kVK_F11: "F11"
+        case kVK_F12: "F12"
+        case kVK_F13: "F13"
+        case kVK_F14: "F14"
+        case kVK_F15: "F15"
+        case kVK_F16: "F16"
+        case kVK_F17: "F17"
+        case kVK_F18: "F18"
+        case kVK_F19: "F19"
+        case kVK_F20: "F20"
         default: nil
         }
+    }
+
+    private var fallbackKeyName: String {
+        "Key \(keyCode)"
     }
 
     static func isValidCombination(modifiers: UInt32) -> Bool {

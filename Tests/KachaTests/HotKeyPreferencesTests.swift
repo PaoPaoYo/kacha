@@ -61,6 +61,25 @@ final class HotKeyPreferencesTests: XCTestCase {
         XCTAssertEqual(preferences.displayString, "⌘↩")
     }
 
+    func test_displayStringUsesFunctionNavigationAndFallbackKeyNames() {
+        XCTAssertEqual(
+            HotKeyPreferences(keyCode: UInt32(kVK_F1), modifiers: UInt32(cmdKey)).displayString,
+            "⌘F1"
+        )
+        XCTAssertEqual(
+            HotKeyPreferences(keyCode: UInt32(kVK_Home), modifiers: UInt32(controlKey)).displayString,
+            "⌃Home"
+        )
+        XCTAssertEqual(
+            HotKeyPreferences(keyCode: UInt32(kVK_PageDown), modifiers: UInt32(optionKey)).displayString,
+            "⌥Page Down"
+        )
+        XCTAssertEqual(
+            HotKeyPreferences(keyCode: UInt32.max, modifiers: UInt32(cmdKey)).displayString,
+            "⌘Key 4294967295"
+        )
+    }
+
     func test_isValidCombinationRejectsNoModifiers() {
         XCTAssertFalse(HotKeyPreferences.isValidCombination(modifiers: 0))
     }

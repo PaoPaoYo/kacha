@@ -78,6 +78,11 @@ struct SettingsView: View {
                         cancelRecording()
                         appDelegate.updateHotKey(.defaultHotKey)
                     }
+                    if let hotKeyErrorMessage = appDelegate.hotKeyErrorMessage {
+                        Text(hotKeyErrorMessage)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
             }
         }
