@@ -71,3 +71,10 @@ make install    # 打包并安装到 /Applications（自动退出旧实例）
 | V4 | 钉图置顶 |
 
 设计文档与实现计划见 [`docs/superpowers/`](docs/superpowers/)。
+
+## 📝 TODO
+
+- [ ] 文本工具
+- [ ] OCR
+- [ ] 翻译
+- [ ] 取色
