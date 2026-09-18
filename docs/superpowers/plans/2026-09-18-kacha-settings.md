@@ -46,6 +46,10 @@
 - Modify: `Sources/Kacha/KachaApp.swift`（Settings scene、条件 MenuBarExtra、菜单「设置…」项、首启 flag、Reopen、applicationDidFinishLaunching 热键读偏好）
 
 **规格：**
-- **SettingsView**（Form 风格）：快捷键行（当前 displayString + 录制按钮：进入录制态显示「按下新组合…」，NSEvent local monitor 捕获 keyDown——有效组合则 save + HotKeyCenter 重注册；Esc/点击他处取消；「恢复默认」按钮）；显示托盘图标 Toggle（@AppStorage showMenuBarIcon）；开机自启 Toggle（迁移现有 SMAppService 逻辑，菜单栏原 Toggle 移除、菜单加「设置…」经 openSettings 打开）
-- **KachaApp**：`Settings { SettingsView() }` scene；`@SceneBuilder` 中 `if showMenuBarIcon` 条件渲染 MenuBarExtra；applicationDidFinishLaunching：首启（!hasLaunchedOnce）→ set flag → openSettings（macOS 14 环境注入，@Environment 在 AppDelegate 不可用——用 `NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)` 或 SettingsLink 的等价命令路径，以实际 SDK 可用 API 为准，报告注明）；`applicationShouldHandleReopen`：托盘隐藏时 → 打开设置页 + NSApp.activate
-- `swift build && swift test` → `make install` → 用户冒烟（spec §5 清单）→ 提交 `feat: 设置页与首启/Reopen 打开`
+- **SettingsView（Mos 式传统偏好窗口风格，作者提供参考图）**：
+  - 顶部图标 Tab 栏：单 Tab「基础」（`gearshape` SF 图标 + 文字；选中态圆角高亮块 `.quaternary` 填充 + 细描边、文字 accent；为未来 OCR/翻译等 Tab 预留结构）——自定义 HStack 实现（非系统 TabView）
+  - 两列表单（**无卡片、无分隔线、纯留白**）：标签列右对齐（固定宽 ~100pt）+ 控件列左对齐；行距 20-24pt；内容区左右大留白（~20%）
+  - Toggle 用**复选框样式** `.toggleStyle(.checkbox)`；说明文字 caption `.secondary` 缩进对齐控件列
+  - 三行：启动（复选框「在开机时启动」）；状态栏图标（复选框「隐藏状态栏图标」+ caption「再次运行咔嚓以显示状态栏图标」）；快捷键（当前组合 displayString + 「录制」按钮：录制态显示「按下新组合…」，NSEvent local monitor 捕获 keyDown——有效组合（含 ≥1 个 ⌘/⌃/⌥）则 save + HotKeyCenter 重注册；Esc 取消录制；「恢复默认」按钮）
+- **KachaApp**：`Settings { SettingsView() }` scene；`@SceneBuilder` 中 `if showMenuBarIcon` 条件渲染 MenuBarExtra；菜单栏原自启 Toggle 移除、菜单加「设置…」经 openSettings 打开；applicationDidFinishLaunching：首启（!hasLaunchedOnce）→ set flag → 打开设置窗（`NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)` 或实际 SDK 可用路径，报告注明）；`applicationShouldHandleReopen`：托盘隐藏时 → 打开设置页 + NSApp.activate
+- `swift build && swift test` → `make install` → 用户冒烟（spec §5 清单）→ 提交 `feat: Mos 风格设置页与首启/Reopen 打开`
