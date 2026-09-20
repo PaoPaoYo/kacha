@@ -1,7 +1,11 @@
 import Carbon.HIToolbox
 import Foundation
 
-struct HotKeyPreferences: Equatable {
+struct HotKeyPreferences: Codable, Equatable {
+    private static let storageKey = "hotKeyPreference"
+    private static let legacyKeyCodeStorageKey = "hotKeyCode"
+    private static let legacyModifiersStorageKey = "hotKeyModifiers"
+
     static let defaultHotKey = Self(keyCode: 0, modifiers: UInt32(controlKey | cmdKey))
 
     var keyCode: UInt32
@@ -97,15 +101,31 @@ struct HotKeyPreferences: Equatable {
     }
 
     static func load(defaults: UserDefaults = .standard) -> Self {
-        guard let keyCode = defaults.object(forKey: "hotKeyCode") as? NSNumber,
-              let modifiers = defaults.object(forKey: "hotKeyModifiers") as? NSNumber else {
+        if let data = defaults.data(forKey: storageKey),
+           let preferences = try? JSONDecoder().decode(Self.self, from: data) {
+            return validated(preferences)
+        }
+
+        guard let keyCode = defaults.object(forKey: legacyKeyCodeStorageKey) as? NSNumber,
+              let modifiers = defaults.object(forKey: legacyModifiersStorageKey) as? NSNumber else {
             return defaultHotKey
         }
-        return Self(keyCode: keyCode.uint32Value, modifiers: modifiers.uint32Value)
+
+        let preferences = validated(
+            Self(keyCode: keyCode.uint32Value, modifiers: modifiers.uint32Value)
+        )
+        preferences.save(defaults: defaults)
+        return preferences
     }
 
     func save(defaults: UserDefaults = .standard) {
-        defaults.set(keyCode, forKey: "hotKeyCode")
-        defaults.set(modifiers, forKey: "hotKeyModifiers")
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        defaults.set(data, forKey: Self.storageKey)
+        defaults.removeObject(forKey: Self.legacyKeyCodeStorageKey)
+        defaults.removeObject(forKey: Self.legacyModifiersStorageKey)
+    }
+
+    private static func validated(_ preferences: Self) -> Self {
+        isValidCombination(modifiers: preferences.modifiers) ? preferences : defaultHotKey
     }
 }

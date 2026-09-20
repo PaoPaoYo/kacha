@@ -108,7 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         hotKeyErrorMessage = hotKeyRegistration.errorMessage
     }
 
-    private func register(_ preferences: HotKeyPreferences) -> Bool {
+    private func register(_ preferences: HotKeyPreferences) -> HotKeyRegistrationResult {
         HotKeyCenter.shared.register(
             keyCode: preferences.keyCode,
             modifiers: preferences.modifiers

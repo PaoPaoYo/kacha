@@ -9,7 +9,7 @@ final class HotKeyRegistrationCoordinatorTests: XCTestCase {
     func test_updateKeepsCurrentPreferencesWhenCandidateRegistrationFails() {
         let coordinator = HotKeyRegistrationCoordinator(current: previous)
 
-        let result = coordinator.update(to: candidate) { _ in false }
+        let result = coordinator.update(to: candidate) { _ in .candidateRejected(previousIsActive: true) }
 
         XCTAssertFalse(result)
         XCTAssertEqual(coordinator.current, previous)
@@ -18,19 +18,36 @@ final class HotKeyRegistrationCoordinatorTests: XCTestCase {
 
     func test_updateCommitsCandidateAndClearsErrorWhenRegistrationSucceeds() {
         let coordinator = HotKeyRegistrationCoordinator(current: previous)
-        _ = coordinator.update(to: candidate) { _ in false }
+        _ = coordinator.update(to: candidate) { _ in .candidateRejected(previousIsActive: true) }
 
-        let result = coordinator.update(to: candidate) { _ in true }
+        let result = coordinator.update(to: candidate) { _ in .registered }
 
         XCTAssertTrue(result)
         XCTAssertEqual(coordinator.current, candidate)
+        XCTAssertTrue(coordinator.isRegistered)
         XCTAssertNil(coordinator.errorMessage)
+    }
+
+    func test_updateReportsWhenCandidateFailureAlsoLeavesNoActiveHotKey() {
+        let coordinator = HotKeyRegistrationCoordinator(current: previous)
+
+        let result = coordinator.update(to: candidate) { _ in
+            .candidateRejected(previousIsActive: false)
+        }
+
+        XCTAssertFalse(result)
+        XCTAssertEqual(coordinator.current, previous)
+        XCTAssertFalse(coordinator.isRegistered)
+        XCTAssertEqual(
+            coordinator.errorMessage,
+            "无法注册该快捷键，且原快捷键未能恢复。请重新设置快捷键。"
+        )
     }
 
     func test_initialRegistrationFailureReportsErrorWithoutClaimingSuccess() {
         let coordinator = HotKeyRegistrationCoordinator(current: previous)
 
-        let result = coordinator.registerInitial { _ in false }
+        let result = coordinator.registerInitial { _ in .candidateRejected(previousIsActive: false) }
 
         XCTAssertFalse(result)
         XCTAssertEqual(coordinator.current, previous)

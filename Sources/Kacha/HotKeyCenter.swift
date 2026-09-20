@@ -18,23 +18,28 @@ final class HotKeyCenter {
         let action: () -> Void
     }
 
-    /// 注册新热键。注册失败时会恢复旧热键，调用方仍应保持原有偏好不变。
+    /// 注册新热键。注册失败时尝试恢复旧热键，并报告恢复是否成功。
     @discardableResult
-    func register(keyCode: UInt32, modifiers: UInt32, action: @escaping () -> Void) -> Bool {
-        guard installHandlerIfNeeded() else { return false }
+    func register(
+        keyCode: UInt32,
+        modifiers: UInt32,
+        action: @escaping () -> Void
+    ) -> HotKeyRegistrationResult {
+        guard installHandlerIfNeeded() else {
+            return .candidateRejected(previousIsActive: registration != nil)
+        }
 
         let previous = registration
         unregisterCurrentHotKey()
 
         guard let hotKeyRef = registerHotKey(keyCode: keyCode, modifiers: modifiers) else {
-            restore(previous)
-            return false
+            return .candidateRejected(previousIsActive: restore(previous))
         }
 
         self.hotKeyRef = hotKeyRef
         registration = Registration(keyCode: keyCode, modifiers: modifiers, action: action)
         Self.action = action
-        return true
+        return .registered
     }
 
     func unregister() {
@@ -93,7 +98,7 @@ final class HotKeyCenter {
         }
     }
 
-    private func restore(_ previous: Registration?) {
+    private func restore(_ previous: Registration?) -> Bool {
         guard let previous,
               let hotKeyRef = registerHotKey(
                 keyCode: previous.keyCode,
@@ -101,11 +106,12 @@ final class HotKeyCenter {
               ) else {
             registration = nil
             Self.action = nil
-            return
+            return false
         }
 
         self.hotKeyRef = hotKeyRef
         registration = previous
         Self.action = previous.action
+        return true
     }
 }

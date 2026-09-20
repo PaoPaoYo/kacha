@@ -43,6 +43,32 @@ final class HotKeyPreferencesTests: XCTestCase {
         )
     }
 
+    func test_saveStoresShortcutAsOneValue() {
+        HotKeyPreferences(keyCode: 1, modifiers: UInt32(cmdKey)).save(defaults: defaults)
+
+        XCTAssertNotNil(defaults.data(forKey: "hotKeyPreference"))
+        XCTAssertNil(defaults.object(forKey: "hotKeyCode"))
+        XCTAssertNil(defaults.object(forKey: "hotKeyModifiers"))
+    }
+
+    func test_loadFallsBackToDefaultForStoredShortcutWithoutRequiredModifiers() {
+        defaults.set(UInt32(kVK_ANSI_S), forKey: "hotKeyCode")
+        defaults.set(UInt32(shiftKey), forKey: "hotKeyModifiers")
+
+        XCTAssertEqual(HotKeyPreferences.load(defaults: defaults), .defaultHotKey)
+    }
+
+    func test_loadMigratesValidLegacyPreferenceToAtomicStorage() {
+        let legacyPreference = HotKeyPreferences(keyCode: UInt32(kVK_ANSI_S), modifiers: UInt32(cmdKey))
+        defaults.set(legacyPreference.keyCode, forKey: "hotKeyCode")
+        defaults.set(legacyPreference.modifiers, forKey: "hotKeyModifiers")
+
+        XCTAssertEqual(HotKeyPreferences.load(defaults: defaults), legacyPreference)
+        XCTAssertNotNil(defaults.data(forKey: "hotKeyPreference"))
+        XCTAssertNil(defaults.object(forKey: "hotKeyCode"))
+        XCTAssertNil(defaults.object(forKey: "hotKeyModifiers"))
+    }
+
     func test_displayStringUsesControlAndCommandSymbolsBeforeKeyName() {
         let preferences = HotKeyPreferences(keyCode: 0, modifiers: UInt32(controlKey | cmdKey))
 
