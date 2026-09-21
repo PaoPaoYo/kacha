@@ -14,4 +14,13 @@ final class SettingsWindowControllerTests: XCTestCase {
 
         XCTAssertTrue(controller.window === firstWindow)
     }
+
+    func test_createdWindowUsesSettingsLayoutMinimumSize() {
+        let controller = SettingsWindowController(appDelegate: AppDelegate())
+
+        controller.show()
+        let window = try! XCTUnwrap(controller.window)
+        XCTAssertEqual(window.minSize.width, SettingsLayout.minimumWidth)
+        XCTAssertEqual(window.minSize.height, SettingsLayout.minimumHeight)
+    }
 }

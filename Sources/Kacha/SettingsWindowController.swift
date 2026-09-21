@@ -14,6 +14,10 @@ final class SettingsWindowController {
         let window = window ?? makeWindow()
         self.window = window
         window.makeKeyAndOrderFront(nil)
+        window.minSize = NSSize(
+            width: SettingsLayout.minimumWidth,
+            height: SettingsLayout.minimumHeight
+        )
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -31,7 +35,20 @@ final class SettingsWindowController {
             defer: false
         )
         window.title = "设置"
-        window.contentView = NSHostingView(rootView: view)
+        let hostingView = NSHostingView(rootView: view)
+        hostingView.sizingOptions = []
+        let contentView = NSView(
+            frame: NSRect(
+                x: 0,
+                y: 0,
+                width: SettingsLayout.minimumWidth,
+                height: SettingsLayout.minimumHeight
+            )
+        )
+        hostingView.frame = contentView.bounds
+        hostingView.autoresizingMask = [.width, .height]
+        contentView.addSubview(hostingView)
+        window.contentView = contentView
         window.minSize = NSSize(
             width: SettingsLayout.minimumWidth,
             height: SettingsLayout.minimumHeight
