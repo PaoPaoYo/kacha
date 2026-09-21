@@ -3,6 +3,21 @@ import Carbon.HIToolbox
 import ServiceManagement
 import SwiftUI
 
+enum SettingsLaunchPolicy {
+    static let shouldOpenSettingsOnLaunch = true
+
+    static func shouldOpenSettingsOnReopen(showMenuBarIcon: Bool) -> Bool {
+        !showMenuBarIcon
+    }
+
+    @MainActor
+    static func scheduleSettingsAfterColdLaunch(
+        _ openSettings: @escaping @MainActor @Sendable () -> Void
+    ) {
+        DispatchQueue.main.async(execute: openSettings)
+    }
+}
+
 @main
 struct KachaApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -57,14 +72,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         hotKeyRegistration = HotKeyRegistrationCoordinator(current: hotKeyPreferences)
         registerInitialHotKey()
 
-        if !UserDefaults.standard.bool(forKey: "hasLaunchedOnce") {
-            UserDefaults.standard.set(true, forKey: "hasLaunchedOnce")
-            openSettings()
+        if SettingsLaunchPolicy.shouldOpenSettingsOnLaunch {
+            SettingsLaunchPolicy.scheduleSettingsAfterColdLaunch {
+                self.openSettings()
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        guard !UserDefaults.standard.bool(forKey: "showMenuBarIcon") else { return true }
+        guard SettingsLaunchPolicy.shouldOpenSettingsOnReopen(
+            showMenuBarIcon: UserDefaults.standard.bool(forKey: "showMenuBarIcon")
+        ) else {
+            return true
+        }
         openSettings()
         NSApp.activate(ignoringOtherApps: true)
         return true
