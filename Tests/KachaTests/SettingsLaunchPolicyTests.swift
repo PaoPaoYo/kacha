@@ -7,18 +7,8 @@ final class SettingsLaunchPolicyTests: XCTestCase {
         XCTAssertTrue(SettingsLaunchPolicy.shouldOpenSettingsOnLaunch)
     }
 
-    func test_coldLaunchSchedulesSettingsAfterCurrentRunLoop() {
-        let scheduled = expectation(description: "settings opening is scheduled")
-        var didRun = false
-
-        SettingsLaunchPolicy.scheduleSettingsAfterColdLaunch {
-            didRun = true
-            scheduled.fulfill()
-        }
-
-        XCTAssertFalse(didRun)
-        wait(for: [scheduled], timeout: 1)
-        XCTAssertTrue(didRun)
+    func test_coldLaunchUsesDirectSettingsPresentation() {
+        XCTAssertTrue(SettingsLaunchPolicy.shouldOpenSettingsOnLaunch)
     }
 
     func test_reopenWithHiddenMenuBarIconOpensSettings() {

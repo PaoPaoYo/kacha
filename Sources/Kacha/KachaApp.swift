@@ -9,13 +9,6 @@ enum SettingsLaunchPolicy {
     static func shouldOpenSettingsOnReopen(showMenuBarIcon: Bool) -> Bool {
         !showMenuBarIcon
     }
-
-    @MainActor
-    static func scheduleSettingsAfterColdLaunch(
-        _ openSettings: @escaping @MainActor @Sendable () -> Void
-    ) {
-        DispatchQueue.main.async(execute: openSettings)
-    }
 }
 
 @main
@@ -24,10 +17,6 @@ struct KachaApp: App {
     @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
 
     var body: some Scene {
-        Settings {
-            SettingsView(appDelegate: appDelegate)
-        }
-
         MenuBarExtra("咔嚓", systemImage: "camera.viewfinder", isInserted: $showMenuBarIcon) {
             MenuContent(appDelegate: appDelegate)
         }
@@ -43,8 +32,8 @@ private struct MenuContent: View {
             Task { await CaptureCoordinator.shared.start() }
         }
         Divider()
-        SettingsLink {
-            Text("设置…")
+        Button("设置…") {
+            appDelegate.openSettings()
         }
         Divider()
         Button("退出") {
@@ -60,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published private(set) var hotKeyPreferences = HotKeyPreferences.defaultHotKey
     @Published private(set) var hotKeyErrorMessage: String?
     private var hotKeyRegistration: HotKeyRegistrationCoordinator?
+    private lazy var settingsWindowController = SettingsWindowController(appDelegate: self)
 
     override init() {
         UserDefaults.standard.register(defaults: ["showMenuBarIcon": true])
@@ -73,10 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         registerInitialHotKey()
 
         if SettingsLaunchPolicy.shouldOpenSettingsOnLaunch {
-            SettingsLaunchPolicy.scheduleSettingsAfterColdLaunch {
-                self.openSettings()
-                NSApp.activate(ignoringOtherApps: true)
-            }
+            openSettings()
         }
     }
 
@@ -87,7 +74,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             return true
         }
         openSettings()
-        NSApp.activate(ignoringOtherApps: true)
         return true
     }
 
@@ -138,7 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
-    private func openSettings() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    func openSettings() {
+        settingsWindowController.show()
     }
 }
