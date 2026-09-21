@@ -3,16 +3,20 @@ import Carbon.HIToolbox
 import ServiceManagement
 import SwiftUI
 
+enum SettingsLaunchPolicy {
+    static let shouldOpenSettingsOnLaunch = true
+
+    static func shouldOpenSettingsOnReopen(showMenuBarIcon: Bool) -> Bool {
+        !showMenuBarIcon
+    }
+}
+
 @main
 struct KachaApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
 
     var body: some Scene {
-        Settings {
-            SettingsView(appDelegate: appDelegate)
-        }
-
         MenuBarExtra("咔嚓", systemImage: "camera.viewfinder", isInserted: $showMenuBarIcon) {
             MenuContent(appDelegate: appDelegate)
         }
@@ -28,8 +32,8 @@ private struct MenuContent: View {
             Task { await CaptureCoordinator.shared.start() }
         }
         Divider()
-        SettingsLink {
-            Text("设置…")
+        Button("设置…") {
+            appDelegate.openSettings()
         }
         Divider()
         Button("退出") {
@@ -45,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published private(set) var hotKeyPreferences = HotKeyPreferences.defaultHotKey
     @Published private(set) var hotKeyErrorMessage: String?
     private var hotKeyRegistration: HotKeyRegistrationCoordinator?
+    private lazy var settingsWindowController = SettingsWindowController(appDelegate: self)
 
     override init() {
         UserDefaults.standard.register(defaults: ["showMenuBarIcon": true])
@@ -57,16 +62,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         hotKeyRegistration = HotKeyRegistrationCoordinator(current: hotKeyPreferences)
         registerInitialHotKey()
 
-        if !UserDefaults.standard.bool(forKey: "hasLaunchedOnce") {
-            UserDefaults.standard.set(true, forKey: "hasLaunchedOnce")
+        if SettingsLaunchPolicy.shouldOpenSettingsOnLaunch {
             openSettings()
         }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        guard !UserDefaults.standard.bool(forKey: "showMenuBarIcon") else { return true }
+        guard SettingsLaunchPolicy.shouldOpenSettingsOnReopen(
+            showMenuBarIcon: UserDefaults.standard.bool(forKey: "showMenuBarIcon")
+        ) else {
+            return true
+        }
         openSettings()
-        NSApp.activate(ignoringOtherApps: true)
         return true
     }
 
@@ -117,7 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
-    private func openSettings() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    func openSettings() {
+        settingsWindowController.show()
     }
 }

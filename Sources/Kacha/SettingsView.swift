@@ -2,6 +2,11 @@ import AppKit
 import Carbon.HIToolbox
 import SwiftUI
 
+enum SettingsLayout {
+    static let minimumWidth: CGFloat = 480
+    static let minimumHeight: CGFloat = 280
+}
+
 struct SettingsView: View {
     @ObservedObject var appDelegate: AppDelegate
     @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
@@ -9,33 +14,17 @@ struct SettingsView: View {
     @State private var recordingMonitor: Any?
 
     var body: some View {
-        VStack(spacing: 0) {
-            tabBar
+        TabView {
             form
+                .tabItem {
+                    Label("基础", systemImage: "gearshape")
+                }
         }
-        .frame(minWidth: 620, minHeight: 390)
+        .frame(
+            minWidth: SettingsLayout.minimumWidth,
+            minHeight: SettingsLayout.minimumHeight
+        )
         .onDisappear(perform: cancelRecording)
-    }
-
-    private var tabBar: some View {
-        HStack {
-            VStack(spacing: 5) {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 18))
-                Text("基础")
-                    .font(.caption)
-            }
-            .foregroundStyle(Color.accentColor)
-            .frame(width: 70, height: 54)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
-            .overlay {
-                RoundedRectangle(cornerRadius: 7)
-                    .strokeBorder(.quaternary)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 16)
     }
 
     private var form: some View {
@@ -86,8 +75,8 @@ struct SettingsView: View {
                 }
             }
         }
-        .padding(.horizontal, 124)
-        .padding(.top, 26)
+        .padding(.horizontal, 48)
+        .padding(.top, 20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
