@@ -40,8 +40,11 @@ struct SelectionView: View {
     /// 输出圆角半径（point）：底部滑动条实时调整；@AppStorage 持久化到 UserDefaults，跨会话记忆上次值
     @AppStorage("cornerRadius") private var cornerRadius: Double = 0
     // MARK: 标注状态（V3）
-    /// 已完成的标注（撤销栈：撤销钮 removeLast 弹出）
-    @State private var annotations: [Annotation] = []
+    @State private var annotationHistory = AnnotationHistory(initial: .init(annotations: [], selectedAnnotationID: nil))
+    @State private var activeAnnotationEdit: AnnotationEditTarget?
+    @State private var annotationEditStartPoint: CGPoint?
+    @State private var annotationEditStartValue: Annotation?
+    @State private var annotationEditPreview: Annotation?
     /// 当前标注工具：select 不接管拖动；arrow/rect/ellipse/pen/blur 接管选区内拖动为绘制
     @State private var activeTool: AnnotationTool = .select
     /// 当前标注颜色（色板 8 色之一）
@@ -71,6 +74,16 @@ struct SelectionView: View {
     @State private var toolbarDragging = false
     /// 拖动起始渲染点基线：onChanged 首帧从 toolbarPosition（nil 视作当时锚定点）解包，后续帧累加 translation
     @State private var toolbarDragBase: CGPoint = .zero
+
+    private var annotations: [Annotation] { annotationHistory.current.annotations }
+    private var selectedAnnotationID: Annotation.ID? { annotationHistory.current.selectedAnnotationID }
+    private var selectedAnnotation: Annotation? {
+        selectedAnnotationID.flatMap { id in annotations.first { $0.id == id } }
+    }
+    private var displayedAnnotations: [Annotation] {
+        guard let annotationEditPreview else { return annotations }
+        return AnnotationEditor.replacing(annotationEditPreview, in: annotations)
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -115,6 +128,10 @@ struct SelectionView: View {
         .onChange(of: activeTool) { _, new in
             // 光标快照同步（引用实例，monitor 每次读到最新值）
             cursorState.tool = new
+            if new != .select {
+                clearAnnotationSelection()
+            }
+            cancelAnnotationEdit()
             // 切工具必收面板：残留开启的面板跨工具存活时，新工具触发钮的互斥会把刚点开的
             // 目标面板立即关掉（blur 态宽度面板「点一次没反应」的根因），且面板渲染门槛
             // 镜像触发钮显隐——工具切换后面板理应随之消失。
@@ -122,6 +139,16 @@ struct SelectionView: View {
             showStylePanel = false
             showWidthPicker = false
             showRadiusSlider = false
+        }
+        .onChange(of: selectedAnnotationID) { _, _ in
+            cursorState.selectedAnnotation = selectedAnnotation
+            cursorState.annotationEditTarget = activeAnnotationEdit
+            // 样式面板的绑定取决于选中对象：切换到对象样式或新建默认值时一律收起，
+            // 防止旧上下文的展开状态在新上下文中泄漏。
+            showStylePanel = false
+        }
+        .onChange(of: activeAnnotationEdit) { _, new in
+            cursorState.annotationEditTarget = new
         }
         .onChange(of: geo.size.height) { _, new in
             cursorState.viewHeight = new
@@ -149,14 +176,27 @@ struct SelectionView: View {
                 return .handled
             }
             .onKeyPress("z", phases: [.down, .repeat]) { press in
-                // ⌘Z 撤销最后一笔标注：SDK 的 onKeyPress 无 modifiers 入参变体（接口只有
-                // key/keys/characters/phases 五种重载），⌘ 修饰键在闭包内手动判定；
-                // 非 ⌘ 的 z 放行（.ignored）。undoLastAnnotation 自带空栈守卫，空栈 no-op 仍吞键
                 guard press.modifiers.contains(.command) else { return .ignored }
-                undoLastAnnotation()
+                if press.modifiers.contains(.shift) {
+                    _ = annotationHistory.redo()
+                } else {
+                    _ = annotationHistory.undo()
+                }
+                cancelAnnotationEdit()
                 return .handled
             }
-            .onExitCommand(perform: onCancel)
+            .onKeyPress(.delete) {
+                removeSelectedAnnotation()
+                return .handled
+            }
+            .onKeyPress(.deleteForward) {
+                removeSelectedAnnotation()
+                return .handled
+            }
+            .onExitCommand {
+                cancelAnnotationEdit()
+                onCancel()
+            }
             .onAppear { installCursorState(bounds: geo.size) }
             .onReceive(NotificationCenter.default.publisher(for: .kachaOverlayDismissed)) { _ in
                 // 覆盖窗被 dismissAll 关闭时立即清 monitor（防泄漏）；onDisappear 仅作兜底
@@ -267,6 +307,8 @@ struct SelectionView: View {
         cursorState.selection = selection
         cursorState.hasSelection = SelectionGeometry.isValid(selection)
         cursorState.tool = activeTool
+        cursorState.selectedAnnotation = selectedAnnotation
+        cursorState.annotationEditTarget = activeAnnotationEdit
         cursorState.blurWidth = CGFloat(blurPenWidth)
         // 光标矩形初值（appear 时选区未定，toolbarRect/panelBand 均 .zero）
         syncPanelBand(sel: selection, bounds: bounds)
@@ -350,11 +392,10 @@ struct SelectionView: View {
         onPin(selection, CGFloat(cornerRadius), annotations)
     }
 
-    /// 撤销最后一笔标注（工具栏撤销钮 / ⌘Z）：空栈无操作（撤销钮空栈时整钮不渲染）
+    /// 撤销一个已提交标注状态；无历史时不执行任何操作。
     private func undoLastAnnotation() {
-        if !annotations.isEmpty {
-            annotations.removeLast()
-        }
+        _ = annotationHistory.undo()
+        cancelAnnotationEdit()
     }
 
     // MARK: 选区层（拆自主 body：表达式过大触发编译器「unable to type-check in reasonable time」）
@@ -370,6 +411,11 @@ struct SelectionView: View {
             .allowsHitTesting(false)
 
         annotationPreviewCanvas(sel: sel)
+            .frame(width: sel.width, height: sel.height)
+            .position(x: sel.midX, y: sel.midY)
+            .allowsHitTesting(false)
+
+        annotationSelectionOverlay(sel: sel)
             .frame(width: sel.width, height: sel.height)
             .position(x: sel.midX, y: sel.midY)
             .allowsHitTesting(false)
@@ -394,7 +440,7 @@ struct SelectionView: View {
     /// 白色标注先 stroke 1pt separator 外扩描边再上色，浅色截图中仍可见（规格约束，仅预览层）。
     private func annotationPreviewCanvas(sel: CGRect) -> some View {
         Canvas { context, _ in
-            for a in annotations + [drawingAnnotation].compactMap({ $0 }) {
+            for a in displayedAnnotations + [drawingAnnotation].compactMap({ $0 }) {
                 var ctx = context
                 // path 产出选区局部坐标（原点 = 视图原点），Canvas 原点 = sel.minX：平移对齐
                 ctx.translateBy(x: -sel.minX, y: -sel.minY)
@@ -424,10 +470,75 @@ struct SelectionView: View {
         }
     }
 
+    @ViewBuilder
+    private func annotationSelectionOverlay(sel: CGRect) -> some View {
+        if activeTool == .select, let selectedAnnotation = annotationEditPreview ?? selectedAnnotation {
+            let stroke = Color(nsColor: .controlAccentColor)
+            switch selectedAnnotation.kind {
+            case let .arrow(start, end):
+                ForEach([start, end], id: \.self) { point in
+                    Circle()
+                        .fill(stroke)
+                        .frame(width: 8, height: 8)
+                        .position(x: point.x * sel.width, y: point.y * sel.height)
+                }
+            case let .rect(bounds), let .ellipse(bounds):
+                let localBounds = CGRect(
+                    x: bounds.minX * sel.width,
+                    y: bounds.minY * sel.height,
+                    width: bounds.width * sel.width,
+                    height: bounds.height * sel.height
+                )
+                Rectangle()
+                    .stroke(stroke, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    .frame(width: localBounds.width, height: localBounds.height)
+                    .position(x: localBounds.midX, y: localBounds.midY)
+                ForEach(AnnotationResizeHandle.allCases, id: \.self) { handle in
+                    Circle()
+                        .fill(stroke)
+                        .frame(width: 8, height: 8)
+                        .position(annotationHandlePoint(handle, in: localBounds))
+                }
+            case let .pen(points):
+                if let bounds = annotationBounds(points: points) {
+                    Rectangle()
+                        .stroke(stroke, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        .frame(width: bounds.width * sel.width, height: bounds.height * sel.height)
+                        .position(x: bounds.midX * sel.width, y: bounds.midY * sel.height)
+                }
+            case .blur:
+                EmptyView()
+            }
+        }
+    }
+
+    private func annotationBounds(points: [CGPoint]) -> CGRect? {
+        guard let first = points.first else { return nil }
+        let xs = points.map(\.x)
+        let ys = points.map(\.y)
+        return CGRect(x: xs.min() ?? first.x, y: ys.min() ?? first.y,
+                      width: (xs.max() ?? first.x) - (xs.min() ?? first.x),
+                      height: (ys.max() ?? first.y) - (ys.min() ?? first.y))
+    }
+
+    private func annotationHandlePoint(_ handle: AnnotationResizeHandle, in bounds: CGRect) -> CGPoint {
+        switch handle {
+        case .topLeft: CGPoint(x: bounds.minX, y: bounds.minY)
+        case .top: CGPoint(x: bounds.midX, y: bounds.minY)
+        case .topRight: CGPoint(x: bounds.maxX, y: bounds.minY)
+        case .right: CGPoint(x: bounds.maxX, y: bounds.midY)
+        case .bottomRight: CGPoint(x: bounds.maxX, y: bounds.maxY)
+        case .bottom: CGPoint(x: bounds.midX, y: bounds.maxY)
+        case .bottomLeft: CGPoint(x: bounds.minX, y: bounds.maxY)
+        case .left: CGPoint(x: bounds.minX, y: bounds.midY)
+        }
+    }
+
     /// 调整态交互层：move 层（选区内拖动整体移动 + 双击确认）→ 8 个缩放手柄 → 标注绘制层
     /// （工具激活时后渲染覆盖命中，move/边/角手势让位）
     @ViewBuilder
     private func adjustmentLayers(in geo: GeometryProxy, sel: CGRect) -> some View {
+        if activeTool != .select {
         // 选区内：拖动整体移动 + 双击确认。
         // 命中泄漏根因：contentShape 必须放在 position 之前——position 把子视图包进
         // 「占满全部可用空间」的定位容器（bounds = 整个 ZStack = 整屏），contentShape
@@ -458,6 +569,7 @@ struct SelectionView: View {
                     }
             )
             .onTapGesture(count: 2) { confirm() }
+        }
 
         // 8 个缩放手柄（四角 + 四边中点）
         HandleLayer(selection: sel)
@@ -468,6 +580,10 @@ struct SelectionView: View {
                 updateAdjust(to: point, in: geo.size)
             }
             .environment(\.adjustEnder) { adjustKind = nil }
+
+        if activeTool == .select {
+            annotationEditingLayer(in: geo, sel: sel)
+        }
 
         // 标注绘制层：工具激活时渲染在 move 层/手柄之上——后渲染覆盖命中，
         // move/边/角手势让位（双击确认随之失效，回车/按钮/右键仍可用）；
@@ -488,6 +604,161 @@ struct SelectionView: View {
                         .onEnded { _ in commitDrawing(in: sel) }
                 )
         }
+    }
+
+    private func annotationEditingLayer(in geo: GeometryProxy, sel: CGRect) -> some View {
+        Color.clear
+            .frame(width: sel.width, height: sel.height)
+            .contentShape(Rectangle())
+            .position(x: sel.midX, y: sel.midY)
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .named("sel"))
+                    .onChanged { value in
+                        routeSelectDrag(at: value.location, start: value.startLocation, selection: sel, bounds: geo.size)
+                    }
+                    .onEnded { _ in
+                        if activeAnnotationEdit != nil {
+                            commitAnnotationEdit()
+                        } else {
+                            adjustKind = nil
+                        }
+                    }
+            )
+            .onTapGesture(count: 2) { confirm() }
+    }
+
+    private func routeSelectDrag(at point: CGPoint, start: CGPoint, selection: CGRect, bounds: CGSize) {
+        if activeAnnotationEdit != nil || beginAnnotationEditIfHit(at: start, selection: selection) {
+            updateAnnotationEdit(to: point, selection: selection)
+            return
+        }
+        // 空白点击/拖拽退出标注上下文；仅提交 selection 状态，截图调整不写标注几何历史。
+        clearAnnotationSelection()
+        if adjustKind == nil {
+            beginAdjust(selectionHandle(at: start, in: selection) ?? .move, at: start)
+        }
+        updateAdjust(to: point, in: bounds)
+    }
+
+    private func selectionHandle(at point: CGPoint, in selection: CGRect) -> SelectionHandleKind? {
+        let corners: [(CGPoint, SelectionHandleKind)] = [
+            (CGPoint(x: selection.minX, y: selection.minY), .topLeft),
+            (CGPoint(x: selection.maxX, y: selection.minY), .topRight),
+            (CGPoint(x: selection.maxX, y: selection.maxY), .bottomRight),
+            (CGPoint(x: selection.minX, y: selection.maxY), .bottomLeft),
+        ]
+        if let corner = corners.first(where: { abs(point.x - $0.0.x) <= 8 && abs(point.y - $0.0.y) <= 8 }) {
+            return corner.1
+        }
+        let inXSpan = point.x >= selection.minX + 8 && point.x <= selection.maxX - 8
+        let inYSpan = point.y >= selection.minY + 8 && point.y <= selection.maxY - 8
+        if inXSpan, point.y >= selection.minY - 3, point.y <= selection.minY + 8 { return .top }
+        if inXSpan, point.y >= selection.maxY - 8, point.y <= selection.maxY + 3 { return .bottom }
+        if inYSpan, point.x >= selection.minX - 3, point.x <= selection.minX + 8 { return .left }
+        if inYSpan, point.x >= selection.maxX - 8, point.x <= selection.maxX + 3 { return .right }
+        return nil
+    }
+
+    private func beginAnnotationEditIfHit(at point: CGPoint, selection: CGRect) -> Bool {
+        let normalizedPoint = AnnotationGeometry.normalizedPoint(point, in: selection)
+        if let selectedAnnotation,
+           let target = AnnotationEditor.target(at: normalizedPoint, annotation: selectedAnnotation, selectionSize: selection.size),
+           target != .move {
+            beginAnnotationEdit(target, at: normalizedPoint, annotation: selectedAnnotation)
+            return true
+        }
+        if let id = AnnotationEditor.hitTest(annotations: annotations, point: normalizedPoint, selectionSize: selection.size),
+           let annotation = annotations.first(where: { $0.id == id }) {
+            beginAnnotationEdit(.move, at: normalizedPoint, annotation: annotation)
+            return true
+        }
+        return false
+    }
+
+    private func updateAnnotationEdit(to point: CGPoint, selection: CGRect) {
+        let normalizedPoint = AnnotationGeometry.normalizedPoint(point, in: selection)
+        guard let target = activeAnnotationEdit,
+              let startPoint = annotationEditStartPoint,
+              let startValue = annotationEditStartValue else { return }
+        annotationEditPreview = AnnotationEditor.transformed(startValue, target: target, from: startPoint, to: normalizedPoint)
+    }
+
+    private func beginAnnotationEdit(_ target: AnnotationEditTarget, at point: CGPoint, annotation: Annotation) {
+        activeAnnotationEdit = target
+        annotationEditStartPoint = point
+        annotationEditStartValue = annotation
+        annotationEditPreview = annotation
+    }
+
+    private func commitAnnotationEdit() {
+        defer { cancelAnnotationEdit() }
+        guard let start = annotationEditStartValue,
+              let preview = annotationEditPreview else { return }
+        if preview != start {
+            commitAnnotationState(
+                annotations: AnnotationEditor.replacing(preview, in: annotations),
+                selectedAnnotationID: preview.id
+            )
+        } else if selectedAnnotationID != preview.id {
+            commitAnnotationState(annotations: annotations, selectedAnnotationID: preview.id)
+        }
+    }
+
+    private func cancelAnnotationEdit() {
+        activeAnnotationEdit = nil
+        annotationEditStartPoint = nil
+        annotationEditStartValue = nil
+        annotationEditPreview = nil
+    }
+
+    private func commitAnnotationState(annotations: [Annotation], selectedAnnotationID: Annotation.ID?) {
+        annotationHistory.commit(.init(annotations: annotations, selectedAnnotationID: selectedAnnotationID))
+    }
+
+    private func clearAnnotationSelection() {
+        guard selectedAnnotationID != nil else { return }
+        commitAnnotationState(annotations: annotations, selectedAnnotationID: nil)
+    }
+
+    private func removeSelectedAnnotation() {
+        guard let selectedAnnotation else { return }
+        commitAnnotationState(
+            annotations: AnnotationEditor.removing(id: selectedAnnotation.id, from: annotations),
+            selectedAnnotationID: nil
+        )
+        cancelAnnotationEdit()
+    }
+
+    private func updateAnnotationColor(_ color: RGBA) {
+        guard let selectedAnnotation else {
+            annotationColor = color
+            return
+        }
+        let updated = AnnotationEditor.updatingStyle(
+            selectedAnnotation,
+            color: color,
+            lineWidth: selectedAnnotation.lineWidth
+        )
+        commitAnnotationState(
+            annotations: AnnotationEditor.replacing(updated, in: annotations),
+            selectedAnnotationID: updated.id
+        )
+    }
+
+    private func updateAnnotationWidth(_ width: AnnotationWidth) {
+        guard let selectedAnnotation else {
+            annotationWidth = width
+            return
+        }
+        let updated = AnnotationEditor.updatingStyle(
+            selectedAnnotation,
+            color: selectedAnnotation.color,
+            lineWidth: width.pt
+        )
+        commitAnnotationState(
+            annotations: AnnotationEditor.replacing(updated, in: annotations),
+            selectedAnnotationID: updated.id
+        )
     }
 
     /// 选区右下角单行工具栏：锚定跟随（toolbarPosition == nil，紧贴选区右下、随选区移动）或
@@ -516,8 +787,13 @@ struct SelectionView: View {
                        toolbarDragging: $toolbarDragging,
                        toolbarDragBase: $toolbarDragBase,
                        anchor: CGPoint(x: group.right, y: group.bottom),
-                       canUndo: !annotations.isEmpty,
+                       canUndo: annotationHistory.canUndo,
+                       canDelete: selectedAnnotation != nil,
+                       selectedAnnotation: selectedAnnotation,
+                       onColorChange: updateAnnotationColor,
+                       onLineWidthChange: updateAnnotationWidth,
                        onUndo: undoLastAnnotation,
+                       onDelete: removeSelectedAnnotation,
                        onSave: save,
                        onPin: pin,
                        onCopy: confirm)
@@ -589,7 +865,7 @@ struct SelectionView: View {
     /// 松开：isValid（太小的标注丢弃）才入撤销栈，随后清进行中标注（无论是否入栈）
     private func commitDrawing(in sel: CGRect) {
         if let drawing = drawingAnnotation, AnnotationGeometry.isValid(drawing.kind, selectionSize: sel.size) {
-            annotations.append(drawing)
+            commitAnnotationState(annotations: annotations + [drawing], selectedAnnotationID: nil)
         }
         drawingAnnotation = nil
     }
@@ -750,7 +1026,18 @@ struct SelectionView: View {
             NSCursor.arrow.set()
             return
         }
-        // b. 命中手柄（几何式）：先四角 ±8 → 对角缩放光标，再边线（内 8 外 3）→ 上下/左右缩放光标
+        // b. 已选标注控制点优先于截图选区手柄。
+        if state.tool == .select, let annotation = state.selectedAnnotation {
+            let normalizedPoint = AnnotationGeometry.normalizedPoint(p, in: state.selection)
+            if let target = AnnotationEditor.target(at: normalizedPoint, annotation: annotation, selectionSize: state.selection.size) {
+                annotationCursor(
+                    for: state.annotationEditTarget ?? target,
+                    isDragging: event.type == .leftMouseDragged
+                ).set()
+                return
+            }
+        }
+        // b'. 命中手柄（几何式）：先四角 ±8 → 对角缩放光标，再边线（内 8 外 3）→ 上下/左右缩放光标
         if let position = cornerPosition(at: p, in: state.selection) {
             NSCursor.frameResize(position: position, directions: .all).set()
             return
@@ -775,6 +1062,27 @@ struct SelectionView: View {
         }
         // d. 其余（遮罩区域、工具栏、二级面板）→ 默认箭头（macOS 惯例：按钮 hover 也是箭头）
         NSCursor.arrow.set()
+    }
+
+    @MainActor
+    private static func annotationCursor(for target: AnnotationEditTarget, isDragging: Bool) -> NSCursor {
+        switch target {
+        case .arrowStart, .arrowEnd:
+            .crosshair
+        case .move:
+            isDragging ? .closedHand : .openHand
+        case let .resize(handle):
+            switch handle {
+            case .topLeft, .bottomRight:
+                .frameResize(position: .topLeft, directions: .all)
+            case .topRight, .bottomLeft:
+                .frameResize(position: .topRight, directions: .all)
+            case .top, .bottom:
+                .resizeUpDown
+            case .left, .right:
+                .resizeLeftRight
+            }
+        }
     }
 
     /// blur 笔刷光标缓存：按直径（blurPenWidth step 2，条目有限）；MainActor 隔离满足 Swift 6
@@ -833,6 +1141,8 @@ private final class CursorState {
     var viewHeight: CGFloat = 0
     /// 当前标注工具：绘制工具激活时选区内十字
     var tool: AnnotationTool = .select
+    var selectedAnnotation: Annotation?
+    var annotationEditTarget: AnnotationEditTarget?
     /// 面板展开期间的光标带（主行矩形向上扩 60pt，见 panelBand）；全收起时 .zero
     var panelBand: CGRect = .zero
     /// 工具栏行矩形（含手动拖动的渲染位移，锚定/自由两态同源，见 syncPanelBand）：
@@ -1025,7 +1335,12 @@ private struct CaptureToolbar: View {
     let anchor: CGPoint
     /// 撤销可用（annotations 非空）：空栈时整钮不渲染（原 40% 置灰删除）
     let canUndo: Bool
+    let canDelete: Bool
+    let selectedAnnotation: Annotation?
+    let onColorChange: (RGBA) -> Void
+    let onLineWidthChange: (AnnotationWidth) -> Void
     let onUndo: () -> Void
+    let onDelete: () -> Void
     let onSave: () -> Void
     let onPin: () -> Void
     let onCopy: () -> Void
@@ -1037,6 +1352,12 @@ private struct CaptureToolbar: View {
     /// 触发钮锚点（测量复刻层上报，胶囊本地空间中点 x；key = PanelID.rawValue）——
     /// 面板浮层宿主定位消费。锚点经玻璃外 preference 送达（玻璃内上报会被容器吞噬）
     @State private var panelAnchors: [String: CGFloat] = [:]
+
+    private var displayedColor: RGBA { selectedAnnotation?.color ?? color }
+    private var displayedLineWidth: AnnotationWidth {
+        guard let selectedAnnotation else { return lineWidth }
+        return AnnotationWidth.allCases.first { $0.pt == selectedAnnotation.lineWidth } ?? lineWidth
+    }
 
     var body: some View {
         mainRow
@@ -1121,11 +1442,8 @@ private struct CaptureToolbar: View {
             // 与圆角钮之间有分隔（随槽收起会只剩留白）；pen/blur 态几何与随槽版完全一致
             // （工具组—8—sep—8—钮）
             separator
-            // 按工具自动显隐（显隐槽 RevealSlot，手动逐帧插值——见 RevealSlot 注释）：
-            // pen 系显样式钮（色+宽合并面板触发）；select 无绘制参数（槽宽 0 全隐）；
-            // blur 显宽钮（双滑块面板触发）。槽内容只剩钮（宽 24）——左分隔符已移出槽外恒显，
-            // 单子层内容直接放（无前轮 Group 拍平垂直堆叠问题）
-            RevealSlot(target: Self.revealSlotWidth(tool: tool), fullWidth: 24) {
+            // select 仅在可编辑对象被选中时显示样式；pen 系始终显示样式；blur 显宽钮。
+            RevealSlot(target: revealSlotWidth, fullWidth: 24) {
                 if tool == .blur {
                     currentWidthButton
                         .background { if measure { anchorPublisher(.width) } }
@@ -1143,6 +1461,12 @@ private struct CaptureToolbar: View {
                 HStack(spacing: 8) {
                     separator
                     ToolbarIconButton(symbol: "arrow.uturn.backward", selected: false, accessibilityLabel: "撤销", action: onUndo)
+                }
+            }
+            RevealSlot(target: canDelete ? 33 : 0, fullWidth: 33) {
+                HStack(spacing: 8) {
+                    separator
+                    ToolbarIconButton(symbol: "trash", selected: false, accessibilityLabel: "删除", action: onDelete)
                 }
             }
             // 保存/复制段的左分隔符（恒定）：撤销槽收起时仍在，保证动作段始终有左分隔
@@ -1164,12 +1488,10 @@ private struct CaptureToolbar: View {
         }
     }
 
-    /// 显隐槽宽度单一公式源（与 rowContent 显隐槽内容一一对应）：样式/宽槽内容仅钮 24
-    /// （左分隔符已移出槽外恒显）；select = 0（全隐）。撤销槽不走此公式（内容含左分隔符，
-    /// 恒 33，见 rowContent 调用处）
-    private static func revealSlotWidth(tool: AnnotationTool) -> CGFloat {
-        tool == .select ? 0 : 24
-    }
+    /// 显隐槽宽度单一公式源（与 rowContent 显隐槽内容一一对应）：样式/宽槽内容仅钮 24。
+    /// select 无选中对象时继续编辑新建默认值，选中对象时改为编辑其样式；blur 使用独立宽钮。
+    /// 撤销槽不走此公式（内容含左分隔符，恒 33，见 rowContent 调用处）。
+    private var revealSlotWidth: CGFloat { 24 }
 
     /// 背景拖动层（挂 mainRow 的 .background、且必须挂 .glassEffect 之前——顺序语义见
     /// mainRow 注释；尺寸被宿主约束 = 玻璃胶囊实际大小）：
@@ -1214,7 +1536,7 @@ private struct CaptureToolbar: View {
         Button {
             togglePanel(.style)
         } label: {
-            colorDot(color)
+            colorDot(displayedColor)
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
         }
@@ -1229,7 +1551,7 @@ private struct CaptureToolbar: View {
         } label: {
             Circle()
                 .fill(Color.primary)
-                .frame(width: lineWidth.dotDiameter, height: lineWidth.dotDiameter)
+                .frame(width: displayedLineWidth.dotDiameter, height: displayedLineWidth.dotDiameter)
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
         }
@@ -1289,7 +1611,7 @@ private struct CaptureToolbar: View {
     @ViewBuilder
     private var panelsHost: some View {
         GeometryReader { _ in
-            if showStylePanel, tool != .select, tool != .blur,
+            if showStylePanel, tool != .blur,
                let anchorX = panelAnchors[PanelID.style.rawValue] {
                 panelSlot(anchorX: anchorX) {
                     // 色板+粗细合并样式面板（两行 VStack，同 blur 双滑块面板节奏）：
@@ -1449,12 +1771,12 @@ private struct CaptureToolbar: View {
     /// 色板圆点钮：当前色外套 2pt accent ring（内缘贴圆点边缘）；选中后执行 onSelect（面板内 = 收起）
     private func colorSwatch(_ c: RGBA, onSelect: @escaping () -> Void) -> some View {
         Button {
-            color = c
+            onColorChange(c)
             onSelect()
         } label: {
             colorDot(c)
                 .overlay {
-                    if c == color {
+                    if c == displayedColor {
                         Circle().strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
                             .frame(width: 18, height: 18)
                     }
@@ -1467,7 +1789,7 @@ private struct CaptureToolbar: View {
     /// 粗细钮（垂直居中实心圆点，直径 = dotDiameter）：当前档外套 2pt accent ring；选中后执行 onSelect
     private func widthButton(_ w: AnnotationWidth, onSelect: @escaping () -> Void) -> some View {
         Button {
-            lineWidth = w
+            onLineWidthChange(w)
             onSelect()
         } label: {
             Circle()
@@ -1475,7 +1797,7 @@ private struct CaptureToolbar: View {
                 .frame(width: w.dotDiameter, height: w.dotDiameter)
                 .frame(width: 18, height: 24)   // 扩大命中区到行高，圆点保持垂直居中
                 .overlay {
-                    if w == lineWidth {
+                    if w == displayedLineWidth {
                         Circle().strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
                             .frame(width: w.dotDiameter + 4, height: w.dotDiameter + 4)
                     }
