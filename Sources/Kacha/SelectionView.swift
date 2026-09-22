@@ -1,3 +1,4 @@
+import Carbon.HIToolbox
 import CoreImage
 import SwiftUI
 
@@ -35,6 +36,8 @@ struct SelectionView: View {
     @State private var cursorState = CursorState()
     /// NSEvent local monitor 令牌（onAppear 安装、onDisappear 移除）
     @State private var cursorMonitor: Any?
+    /// Delete/Forward Delete keyDown 监听（不依赖 SwiftUI 焦点；与光标 monitor 同生命周期）
+    @State private var keyMonitor: Any?
     /// 悬停命中的窗口矩形（仅 idle 态更新；dragging 期间保持旧值供 onEnded 窗口分支读取）
     @State private var hoveredWindow: CGRect? = nil
     /// 输出圆角半径（point）：底部滑动条实时调整；@AppStorage 持久化到 UserDefaults，跨会话记忆上次值
@@ -200,6 +203,10 @@ struct SelectionView: View {
                 removeSelectedAnnotation()
                 return .handled
             }
+            .onReceive(NotificationCenter.default.publisher(for: .kachaDeleteSelectedAnnotation)) { _ in
+                // keyDown local monitor 路径：点击选中后焦点常不在 focusable 视图，onKeyPress 收不到
+                removeSelectedAnnotation()
+            }
             .onExitCommand {
                 cancelAnnotationEdit()
                 onCancel()
@@ -208,9 +215,11 @@ struct SelectionView: View {
             .onReceive(NotificationCenter.default.publisher(for: .kachaOverlayDismissed)) { _ in
                 // 覆盖窗被 dismissAll 关闭时立即清 monitor（防泄漏）；onDisappear 仅作兜底
                 removeCursorMonitor()
+                removeKeyMonitor()
             }
             .onDisappear {
                 removeCursorMonitor()
+                removeKeyMonitor()
             }
     }
 
@@ -324,6 +333,35 @@ struct SelectionView: View {
             Self.applyCursor(event: event, state: cursorState, screen: frame.screen)
             return event
         }
+        installKeyMonitor()
+    }
+
+    /// Delete 键不依赖 SwiftUI focus：点击选中后 focusable 常失焦，onKeyPress 收不到。
+    /// 与光标同一 local monitor 模式；命中时吞掉事件并广播，由 onReceive 执行删除。
+    private func installKeyMonitor() {
+        removeKeyMonitor()
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard Self.keyCommand(
+                keyCode: event.keyCode,
+                modifiers: event.modifierFlags,
+                hasSelectedAnnotation: cursorState.selectedAnnotation != nil
+            ) == .deleteSelectedAnnotation else { return event }
+            NotificationCenter.default.post(name: .kachaDeleteSelectedAnnotation, object: nil)
+            return nil
+        }
+    }
+
+    /// 覆盖窗按键命令（纯决策，便于单测）：仅在有选中标注时，Delete/Forward Delete 且无
+    /// ⌘/⌥/⌃ 修饰 → 删除。其余键（含 Return、带修饰组合）返回 nil 交由原路径处理。
+    static func keyCommand(
+        keyCode: UInt16,
+        modifiers: NSEvent.ModifierFlags,
+        hasSelectedAnnotation: Bool
+    ) -> SelectionKeyCommand? {
+        guard hasSelectedAnnotation else { return nil }
+        guard keyCode == UInt16(kVK_Delete) || keyCode == UInt16(kVK_ForwardDelete) else { return nil }
+        guard modifiers.intersection([.command, .option, .control]).isEmpty else { return nil }
+        return .deleteSelectedAnnotation
     }
 
     // MARK: 状态推算
@@ -926,6 +964,13 @@ struct SelectionView: View {
         cursorMonitor = nil
     }
 
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+        }
+        keyMonitor = nil
+    }
+
     // MARK: 光标（NSEvent monitor 单一决策点）
 
     /// 四角命中判定（每点 ±8pt 方形命中区），返回对应对角 frameResize 位置
@@ -1236,6 +1281,11 @@ enum AnnotationPointerCursorStyle: Equatable, Sendable {
     case resizeTopRight
     case resizeVertical
     case resizeHorizontal
+}
+
+/// 覆盖层按键命令（keyDown monitor / 纯决策用）
+enum SelectionKeyCommand: Equatable, Sendable {
+    case deleteSelectedAnnotation
 }
 
 /// 调整态可拖拽的部位：8 个手柄 + 选区内部（整体移动）

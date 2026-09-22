@@ -11,6 +11,8 @@ enum CaptureAction {
 /// 覆盖窗全部关闭的广播：SelectionView 借此立即移除自身的 NSEvent monitor（防泄漏）
 extension Notification.Name {
     static let kachaOverlayDismissed = Notification.Name("kachaOverlayDismissed")
+    /// keyDown monitor 判定应删除选中标注（焦点不在 SwiftUI focusable 时 onKeyPress 收不到）
+    static let kachaDeleteSelectedAnnotation = Notification.Name("kachaDeleteSelectedAnnotation")
 }
 
 @MainActor
