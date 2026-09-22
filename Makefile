@@ -22,6 +22,7 @@ install: app
 	rm -rf /Applications/$(APP_NAME).app
 	cp -R $(APP_DIR) /Applications/
 	open /Applications/$(APP_NAME).app
+	rm -rf $(APP_DIR)
 
 run: app
 	open $(APP_DIR)
