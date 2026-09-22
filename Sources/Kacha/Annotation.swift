@@ -60,7 +60,11 @@ struct Annotation: Identifiable, Equatable {
     var lineWidth: CGFloat
 
     init(kind: Kind, color: RGBA, lineWidth: CGFloat) {
-        self.id = UUID()
+        self.init(id: UUID(), kind: kind, color: color, lineWidth: lineWidth)
+    }
+
+    init(id: UUID, kind: Kind, color: RGBA, lineWidth: CGFloat) {
+        self.id = id
         self.kind = kind
         self.color = color
         self.lineWidth = lineWidth
