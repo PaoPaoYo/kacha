@@ -214,6 +214,32 @@ final class AnnotationEditorTests: XCTestCase {
         XCTAssertEqual(result, [second])
     }
 
+    func test_previewDragDoesNotCommitHistoryUntilRelease() {
+        let original = Annotation(
+            kind: .rect(CGRect(x: 0.2, y: 0.2, width: 0.3, height: 0.3)),
+            color: .red,
+            lineWidth: 4
+        )
+        let preview = AnnotationEditor.transformed(
+            original,
+            target: .move,
+            from: CGPoint(x: 0.3, y: 0.3),
+            to: CGPoint(x: 0.5, y: 0.5)
+        )
+        var history = AnnotationHistory(initial: .init(annotations: [original], selectedAnnotationID: original.id))
+
+        XCTAssertEqual(history.current.annotations, [original])
+        XCTAssertFalse(history.canUndo)
+
+        history.commit(.init(
+            annotations: AnnotationEditor.replacing(preview, in: history.current.annotations),
+            selectedAnnotationID: original.id
+        ))
+
+        XCTAssertEqual(history.current.annotations, [preview])
+        XCTAssertTrue(history.canUndo)
+    }
+
     private func XCTAssertArrow(
         _ kind: Annotation.Kind,
         start expectedStart: CGPoint,

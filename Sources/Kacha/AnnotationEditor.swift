@@ -8,7 +8,7 @@ enum AnnotationEditTarget: Equatable {
     case resize(AnnotationResizeHandle)
 }
 
-enum AnnotationResizeHandle: CaseIterable {
+enum AnnotationResizeHandle: CaseIterable, Hashable {
     case topLeft
     case top
     case topRight
@@ -102,6 +102,10 @@ struct AnnotationEditor {
 
     static func removing(id: Annotation.ID, from annotations: [Annotation]) -> [Annotation] {
         annotations.filter { $0.id != id }
+    }
+
+    static func replacing(_ annotation: Annotation, in annotations: [Annotation]) -> [Annotation] {
+        annotations.map { $0.id == annotation.id ? annotation : $0 }
     }
 
     private static func isEditable(_ annotation: Annotation) -> Bool {
