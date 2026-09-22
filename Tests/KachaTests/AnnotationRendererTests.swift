@@ -45,6 +45,116 @@ final class AnnotationRendererTests: XCTestCase {
         XCTAssertTrue(out === base)
     }
 
+    func test_compositeRendersMovedArrowAtEditedPosition() {
+        let original = Annotation(
+            kind: .arrow(start: CGPoint(x: 0.1, y: 0.1), end: CGPoint(x: 0.3, y: 0.1)),
+            color: .red,
+            lineWidth: 4
+        )
+        let moved = AnnotationEditor.transformed(
+            original,
+            target: .move,
+            from: CGPoint(x: 0.2, y: 0.1),
+            to: CGPoint(x: 0.5, y: 0.4)
+        )
+
+        let out = AnnotationRenderer.composite(
+            solidImage(.white, width: 100, height: 100),
+            annotations: [moved],
+            selectionPointWidth: 100
+        )
+
+        XCTAssertRed(pixel(out, 45, 40))
+        XCTAssertWhite(pixel(out, 20, 10))
+    }
+
+    func test_compositeRendersResizedEllipseAtEditedBounds() {
+        let original = Annotation(
+            kind: .ellipse(CGRect(x: 0.2, y: 0.3, width: 0.4, height: 0.2)),
+            color: .blue,
+            lineWidth: 4
+        )
+        let resized = AnnotationEditor.transformed(
+            original,
+            target: .resize(.right),
+            from: CGPoint(x: 0.6, y: 0.4),
+            to: CGPoint(x: 0.8, y: 0.4)
+        )
+
+        let out = AnnotationRenderer.composite(
+            solidImage(.white, width: 100, height: 100),
+            annotations: [resized],
+            selectionPointWidth: 100
+        )
+
+        XCTAssertBlue(pixel(out, 80, 40))
+        XCTAssertWhite(pixel(out, 60, 40))
+    }
+
+    func test_compositeRendersRestyledPenWithEditedColor() {
+        let pen = Annotation(
+            kind: .pen(points: [CGPoint(x: 0.2, y: 0.5), CGPoint(x: 0.8, y: 0.5)]),
+            color: .red,
+            lineWidth: 4
+        )
+        let restyled = AnnotationEditor.updatingStyle(pen, color: .green, lineWidth: 8)
+
+        let out = AnnotationRenderer.composite(
+            solidImage(.white, width: 100, height: 100),
+            annotations: [restyled],
+            selectionPointWidth: 100
+        )
+
+        XCTAssertGreen(pixel(out, 50, 50))
+        XCTAssertWhite(pixel(out, 50, 35))
+    }
+
+    func test_compositeRendersLaterAnnotationAboveEarlierAnnotation() {
+        let horizontal = Annotation(
+            kind: .pen(points: [CGPoint(x: 0.2, y: 0.5), CGPoint(x: 0.8, y: 0.5)]),
+            color: .red,
+            lineWidth: 8
+        )
+        let vertical = Annotation(
+            kind: .pen(points: [CGPoint(x: 0.5, y: 0.2), CGPoint(x: 0.5, y: 0.8)]),
+            color: .blue,
+            lineWidth: 8
+        )
+
+        let out = AnnotationRenderer.composite(
+            solidImage(.white, width: 100, height: 100),
+            annotations: [horizontal, vertical],
+            selectionPointWidth: 100
+        )
+
+        XCTAssertBlue(pixel(out, 50, 50))
+        XCTAssertRed(pixel(out, 30, 50))
+    }
+
+    private func XCTAssertRed(_ value: (UInt8, UInt8, UInt8), file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertGreaterThan(Int(value.0), 220, file: file, line: line)
+        XCTAssertLessThan(Int(value.1), 100, file: file, line: line)
+        XCTAssertLessThan(Int(value.2), 100, file: file, line: line)
+    }
+
+    private func XCTAssertGreen(_ value: (UInt8, UInt8, UInt8), file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertLessThan(Int(value.0), 100, file: file, line: line)
+        XCTAssertGreaterThan(Int(value.1), 150, file: file, line: line)
+        XCTAssertLessThan(Int(value.2), 130, file: file, line: line)
+    }
+
+    private func XCTAssertBlue(_ value: (UInt8, UInt8, UInt8), file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertLessThan(Int(value.0), 80, file: file, line: line)
+        XCTAssertGreaterThan(Int(value.1), 80, file: file, line: line)
+        XCTAssertGreaterThan(Int(value.2), 220, file: file, line: line)
+    }
+
+    private func XCTAssertWhite(_ value: (UInt8, UInt8, UInt8), file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertGreaterThan(Int(value.0), 240, file: file, line: line)
+        XCTAssertGreaterThan(Int(value.1), 240, file: file, line: line)
+        XCTAssertGreaterThan(Int(value.2), 240, file: file, line: line)
+    }
+
     func test_composite_blurRegionIgnoresColor() {
         // 底图：bitmap 顶部 40 行黑、其余白（CG 底左原点：黑块 = y 60..100）
         let ctx = CGContext(data: nil, width: 100, height: 100, bitsPerComponent: 8,
