@@ -140,6 +140,13 @@ struct SelectionView: View {
             showWidthPicker = false
             showRadiusSlider = false
         }
+        .onChange(of: annotationHistory.current) { _, new in
+            // 光标 hitTest/控制点依赖最新文档（含 undo/redo、增删、同 ID 样式/几何替换）
+            cursorState.annotations = new.annotations
+            cursorState.selectedAnnotation = new.selectedAnnotationID.flatMap { id in
+                new.annotations.first { $0.id == id }
+            }
+        }
         .onChange(of: selectedAnnotationID) { _, _ in
             cursorState.selectedAnnotation = selectedAnnotation
             cursorState.annotationEditTarget = activeAnnotationEdit
@@ -309,6 +316,7 @@ struct SelectionView: View {
         cursorState.tool = activeTool
         cursorState.selectedAnnotation = selectedAnnotation
         cursorState.annotationEditTarget = activeAnnotationEdit
+        cursorState.annotations = annotations
         cursorState.blurWidth = CGFloat(blurPenWidth)
         // 光标矩形初值（appear 时选区未定，toolbarRect/panelBand 均 .zero）
         syncPanelBand(sel: selection, bounds: bounds)
@@ -1026,16 +1034,19 @@ struct SelectionView: View {
             NSCursor.arrow.set()
             return
         }
-        // b. 已选标注控制点优先于截图选区手柄。
-        if state.tool == .select, let annotation = state.selectedAnnotation {
-            let normalizedPoint = AnnotationGeometry.normalizedPoint(p, in: state.selection)
-            if let target = AnnotationEditor.target(at: normalizedPoint, annotation: annotation, selectionSize: state.selection.size) {
-                annotationCursor(
-                    for: state.annotationEditTarget ?? target,
-                    isDragging: event.type == .leftMouseDragged
-                ).set()
-                return
-            }
+        // b. 标注交互优先于截图选区手柄：已选控制点/编辑拖拽 → 专用光标；
+        //    命中可点击涂鸦 → 普通箭头（与空白区手形区分）。无命中回落手柄逻辑。
+        if let style = annotationPointerCursorStyle(
+            point: p,
+            tool: state.tool,
+            selection: state.selection,
+            annotations: state.annotations,
+            selectedAnnotation: state.selectedAnnotation,
+            activeEditTarget: state.annotationEditTarget,
+            isDragging: event.type == .leftMouseDragged
+        ) {
+            nsCursor(for: style).set()
+            return
         }
         // b'. 命中手柄（几何式）：先四角 ±8 → 对角缩放光标，再边线（内 8 外 3）→ 上下/左右缩放光标
         if let position = cornerPosition(at: p, in: state.selection) {
@@ -1064,8 +1075,48 @@ struct SelectionView: View {
         NSCursor.arrow.set()
     }
 
-    @MainActor
-    private static func annotationCursor(for target: AnnotationEditTarget, isDragging: Bool) -> NSCursor {
+    /// select 工具下指针处的标注光标样式；nil = 无标注交互，回落选区手柄/空白手形。
+    /// 优先级与点击一致：已选控制点/进行中编辑拖拽 > 可点击标注命中（普通箭头）。
+    /// 返回 Sendable 枚举而非 NSCursor，便于非隔离单测；applyCursor 再映射。
+    static func annotationPointerCursorStyle(
+        point: CGPoint,
+        tool: AnnotationTool,
+        selection: CGRect,
+        annotations: [Annotation],
+        selectedAnnotation: Annotation?,
+        activeEditTarget: AnnotationEditTarget?,
+        isDragging: Bool
+    ) -> AnnotationPointerCursorStyle? {
+        guard tool == .select, SelectionGeometry.isValid(selection) else { return nil }
+        let normalizedPoint = AnnotationGeometry.normalizedPoint(point, in: selection)
+
+        if let selectedAnnotation,
+           let target = AnnotationEditor.target(
+               at: normalizedPoint,
+               annotation: selectedAnnotation,
+               selectionSize: selection.size
+           ) {
+            return annotationPointerCursorStyle(for: activeEditTarget ?? target, isDragging: isDragging)
+        }
+        if isDragging, let activeEditTarget {
+            return annotationPointerCursorStyle(for: activeEditTarget, isDragging: true)
+        }
+        // 选区手柄/空白拖动中不抢箭头：非标注编辑拖拽回落手柄与合掌逻辑
+        if !isDragging,
+           AnnotationEditor.hitTest(
+               annotations: annotations,
+               point: normalizedPoint,
+               selectionSize: selection.size
+           ) != nil {
+            return .arrow
+        }
+        return nil
+    }
+
+    private static func annotationPointerCursorStyle(
+        for target: AnnotationEditTarget,
+        isDragging: Bool
+    ) -> AnnotationPointerCursorStyle {
         switch target {
         case .arrowStart, .arrowEnd:
             .crosshair
@@ -1074,14 +1125,35 @@ struct SelectionView: View {
         case let .resize(handle):
             switch handle {
             case .topLeft, .bottomRight:
-                .frameResize(position: .topLeft, directions: .all)
+                .resizeTopLeft
             case .topRight, .bottomLeft:
-                .frameResize(position: .topRight, directions: .all)
+                .resizeTopRight
             case .top, .bottom:
-                .resizeUpDown
+                .resizeVertical
             case .left, .right:
-                .resizeLeftRight
+                .resizeHorizontal
             }
+        }
+    }
+
+    private static func nsCursor(for style: AnnotationPointerCursorStyle) -> NSCursor {
+        switch style {
+        case .arrow:
+            .arrow
+        case .crosshair:
+            .crosshair
+        case .openHand:
+            .openHand
+        case .closedHand:
+            .closedHand
+        case .resizeTopLeft:
+            .frameResize(position: .topLeft, directions: .all)
+        case .resizeTopRight:
+            .frameResize(position: .topRight, directions: .all)
+        case .resizeVertical:
+            .resizeUpDown
+        case .resizeHorizontal:
+            .resizeLeftRight
         }
     }
 
@@ -1143,6 +1215,8 @@ private final class CursorState {
     var tool: AnnotationTool = .select
     var selectedAnnotation: Annotation?
     var annotationEditTarget: AnnotationEditTarget?
+    /// 当前文档标注快照：select 悬停 hitTest 用（与 click 路由同源）
+    var annotations: [Annotation] = []
     /// 面板展开期间的光标带（主行矩形向上扩 60pt，见 panelBand）；全收起时 .zero
     var panelBand: CGRect = .zero
     /// 工具栏行矩形（含手动拖动的渲染位移，锚定/自由两态同源，见 syncPanelBand）：
@@ -1150,6 +1224,18 @@ private final class CursorState {
     var toolbarRect: CGRect = .zero
     /// blur 工具笔刷光标直径（= blurPenWidth，实时跟随滑块）
     var blurWidth: CGFloat = 0
+}
+
+/// 标注指针光标样式（Sendable，避免 NSCursor 跨 actor 返回）
+enum AnnotationPointerCursorStyle: Equatable, Sendable {
+    case arrow
+    case crosshair
+    case openHand
+    case closedHand
+    case resizeTopLeft
+    case resizeTopRight
+    case resizeVertical
+    case resizeHorizontal
 }
 
 /// 调整态可拖拽的部位：8 个手柄 + 选区内部（整体移动）
