@@ -240,6 +240,32 @@ final class AnnotationEditorTests: XCTestCase {
         XCTAssertTrue(history.canUndo)
     }
 
+    func test_draggingUnselectedAnnotationCommitsSelectionAndGeometryAsOneUndoStep() {
+        let original = Annotation(
+            kind: .rect(CGRect(x: 0.2, y: 0.2, width: 0.3, height: 0.3)),
+            color: .red,
+            lineWidth: 4
+        )
+        let preview = AnnotationEditor.transformed(
+            original,
+            target: .move,
+            from: CGPoint(x: 0.2, y: 0.35),
+            to: CGPoint(x: 0.4, y: 0.55)
+        )
+        let initial = AnnotationDocumentState(annotations: [original], selectedAnnotationID: nil)
+        var history = AnnotationHistory(initial: initial)
+
+        history.commit(.init(
+            annotations: AnnotationEditor.replacing(preview, in: history.current.annotations),
+            selectedAnnotationID: preview.id
+        ))
+
+        XCTAssertEqual(history.current.annotations, [preview])
+        XCTAssertEqual(history.current.selectedAnnotationID, preview.id)
+        XCTAssertEqual(history.undo(), initial)
+        XCTAssertNil(history.undo())
+    }
+
     private func XCTAssertArrow(
         _ kind: Annotation.Kind,
         start expectedStart: CGPoint,

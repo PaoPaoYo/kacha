@@ -469,7 +469,7 @@ struct SelectionView: View {
 
     @ViewBuilder
     private func annotationSelectionOverlay(sel: CGRect) -> some View {
-        if activeTool == .select, let selectedAnnotation {
+        if activeTool == .select, let selectedAnnotation = annotationEditPreview ?? selectedAnnotation {
             let stroke = Color(nsColor: .controlAccentColor)
             switch selectedAnnotation.kind {
             case let .arrow(start, end):
@@ -657,13 +657,13 @@ struct SelectionView: View {
     private func beginAnnotationEditIfHit(at point: CGPoint, selection: CGRect) -> Bool {
         let normalizedPoint = AnnotationGeometry.normalizedPoint(point, in: selection)
         if let selectedAnnotation,
-           let target = AnnotationEditor.target(at: normalizedPoint, annotation: selectedAnnotation, selectionSize: selection.size) {
+           let target = AnnotationEditor.target(at: normalizedPoint, annotation: selectedAnnotation, selectionSize: selection.size),
+           target != .move {
             beginAnnotationEdit(target, at: normalizedPoint, annotation: selectedAnnotation)
             return true
         }
         if let id = AnnotationEditor.hitTest(annotations: annotations, point: normalizedPoint, selectionSize: selection.size),
            let annotation = annotations.first(where: { $0.id == id }) {
-            commitAnnotationState(annotations: annotations, selectedAnnotationID: id)
             beginAnnotationEdit(.move, at: normalizedPoint, annotation: annotation)
             return true
         }
@@ -688,12 +688,15 @@ struct SelectionView: View {
     private func commitAnnotationEdit() {
         defer { cancelAnnotationEdit() }
         guard let start = annotationEditStartValue,
-              let preview = annotationEditPreview,
-              preview != start else { return }
-        commitAnnotationState(
-            annotations: AnnotationEditor.replacing(preview, in: annotations),
-            selectedAnnotationID: preview.id
-        )
+              let preview = annotationEditPreview else { return }
+        if preview != start {
+            commitAnnotationState(
+                annotations: AnnotationEditor.replacing(preview, in: annotations),
+                selectedAnnotationID: preview.id
+            )
+        } else if selectedAnnotationID != preview.id {
+            commitAnnotationState(annotations: annotations, selectedAnnotationID: preview.id)
+        }
     }
 
     private func cancelAnnotationEdit() {
@@ -1434,11 +1437,8 @@ private struct CaptureToolbar: View {
             // 与圆角钮之间有分隔（随槽收起会只剩留白）；pen/blur 态几何与随槽版完全一致
             // （工具组—8—sep—8—钮）
             separator
-            // 按工具自动显隐（显隐槽 RevealSlot，手动逐帧插值——见 RevealSlot 注释）：
-            // pen 系显样式钮（色+宽合并面板触发）；select 无绘制参数（槽宽 0 全隐）；
-            // blur 显宽钮（双滑块面板触发）。槽内容只剩钮（宽 24）——左分隔符已移出槽外恒显，
-            // 单子层内容直接放（无前轮 Group 拍平垂直堆叠问题）
-            RevealSlot(target: Self.revealSlotWidth(tool: tool), fullWidth: 24) {
+            // select 仅在可编辑对象被选中时显示样式；pen 系始终显示样式；blur 显宽钮。
+            RevealSlot(target: revealSlotWidth, fullWidth: 24) {
                 if tool == .blur {
                     currentWidthButton
                         .background { if measure { anchorPublisher(.width) } }
@@ -1483,12 +1483,10 @@ private struct CaptureToolbar: View {
         }
     }
 
-    /// 显隐槽宽度单一公式源（与 rowContent 显隐槽内容一一对应）：样式/宽槽内容仅钮 24
-    /// （左分隔符已移出槽外恒显）；select = 0（全隐）。撤销槽不走此公式（内容含左分隔符，
-    /// 恒 33，见 rowContent 调用处）
-    private static func revealSlotWidth(tool: AnnotationTool) -> CGFloat {
-        tool == .select ? 0 : 24
-    }
+    /// 显隐槽宽度单一公式源（与 rowContent 显隐槽内容一一对应）：样式/宽槽内容仅钮 24。
+    /// select 无选中对象时继续编辑新建默认值，选中对象时改为编辑其样式；blur 使用独立宽钮。
+    /// 撤销槽不走此公式（内容含左分隔符，恒 33，见 rowContent 调用处）。
+    private var revealSlotWidth: CGFloat { 24 }
 
     /// 背景拖动层（挂 mainRow 的 .background、且必须挂 .glassEffect 之前——顺序语义见
     /// mainRow 注释；尺寸被宿主约束 = 玻璃胶囊实际大小）：
@@ -1608,7 +1606,8 @@ private struct CaptureToolbar: View {
     @ViewBuilder
     private var panelsHost: some View {
         GeometryReader { _ in
-            if showStylePanel, tool != .select, tool != .blur,
+            if showStylePanel, tool != .blur,
+               (tool != .select || selectedAnnotation != nil),
                let anchorX = panelAnchors[PanelID.style.rawValue] {
                 panelSlot(anchorX: anchorX) {
                     // 色板+粗细合并样式面板（两行 VStack，同 blur 双滑块面板节奏）：
