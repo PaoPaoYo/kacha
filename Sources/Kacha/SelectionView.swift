@@ -143,6 +143,9 @@ struct SelectionView: View {
         .onChange(of: selectedAnnotationID) { _, _ in
             cursorState.selectedAnnotation = selectedAnnotation
             cursorState.annotationEditTarget = activeAnnotationEdit
+            // 样式面板的绑定取决于选中对象：切换到对象样式或新建默认值时一律收起，
+            // 防止旧上下文的展开状态在新上下文中泄漏。
+            showStylePanel = false
         }
         .onChange(of: activeAnnotationEdit) { _, new in
             cursorState.annotationEditTarget = new
@@ -1607,7 +1610,6 @@ private struct CaptureToolbar: View {
     private var panelsHost: some View {
         GeometryReader { _ in
             if showStylePanel, tool != .blur,
-               (tool != .select || selectedAnnotation != nil),
                let anchorX = panelAnchors[PanelID.style.rawValue] {
                 panelSlot(anchorX: anchorX) {
                     // 色板+粗细合并样式面板（两行 VStack，同 blur 双滑块面板节奏）：

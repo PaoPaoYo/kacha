@@ -266,6 +266,22 @@ final class AnnotationEditorTests: XCTestCase {
         XCTAssertNil(history.undo())
     }
 
+    func test_styleUpdateUsesDefaultsWithoutSelectionAndSelectedAnnotationWithSelection() {
+        let annotation = Annotation(
+            kind: .rect(CGRect(x: 0.2, y: 0.2, width: 0.3, height: 0.3)),
+            color: .red,
+            lineWidth: 4
+        )
+        let defaults = (color: RGBA.orange, width: AnnotationWidth.thin)
+        let selected = AnnotationEditor.updatingStyle(annotation, color: .blue, lineWidth: AnnotationWidth.thick.pt)
+
+        XCTAssertEqual(defaults.color, .orange)
+        XCTAssertEqual(defaults.width, .thin)
+        XCTAssertEqual(selected.color, .blue)
+        XCTAssertEqual(selected.lineWidth, AnnotationWidth.thick.pt)
+        XCTAssertEqual(selected.id, annotation.id)
+    }
+
     private func XCTAssertArrow(
         _ kind: Annotation.Kind,
         start expectedStart: CGPoint,
