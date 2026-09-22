@@ -106,6 +106,7 @@ final class AnnotationRendererTests: XCTestCase {
         )
 
         XCTAssertGreen(pixel(out, 50, 50))
+        XCTAssertGreen(pixel(out, 50, 47))
         XCTAssertWhite(pixel(out, 50, 35))
     }
 

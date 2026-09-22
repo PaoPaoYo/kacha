@@ -56,7 +56,7 @@ make install    # 构建并安装到 /Applications
 ## 🛠️ 开发
 
 ```bash
-make test       # 运行测试（68 例）
+make test       # 运行测试
 make app        # 构建打包 kacha.app
 make install    # 打包并安装到 /Applications（自动退出旧实例）
 ```
