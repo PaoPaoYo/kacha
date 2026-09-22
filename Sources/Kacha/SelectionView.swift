@@ -632,6 +632,8 @@ struct SelectionView: View {
             updateAnnotationEdit(to: point, selection: selection)
             return
         }
+        // 空白点击/拖拽退出标注上下文；仅提交 selection 状态，截图调整不写标注几何历史。
+        clearAnnotationSelection()
         if adjustKind == nil {
             beginAdjust(selectionHandle(at: start, in: selection) ?? .move, at: start)
         }

@@ -61,6 +61,23 @@ final class AnnotationHistoryTests: XCTestCase {
         XCTAssertEqual(history.current, state)
     }
 
+    func test_blankSelectionClickCommitsOnlyDeselection() {
+        let annotation = Annotation(
+            kind: .rect(CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.2)),
+            color: .red,
+            lineWidth: 4
+        )
+        let selected = AnnotationDocumentState(annotations: [annotation], selectedAnnotationID: annotation.id)
+        let deselected = AnnotationDocumentState(annotations: [annotation], selectedAnnotationID: nil)
+        var history = AnnotationHistory(initial: selected)
+
+        history.commit(deselected)
+
+        XCTAssertEqual(history.current.annotations, [annotation])
+        XCTAssertNil(history.current.selectedAnnotationID)
+        XCTAssertEqual(history.undo(), selected)
+    }
+
     func test_undoRestoresDeletedAnnotationAndSelectedID() {
         let first = Annotation(
             kind: .rect(CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.2)),
