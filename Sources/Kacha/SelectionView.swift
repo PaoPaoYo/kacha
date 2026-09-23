@@ -49,7 +49,7 @@ struct SelectionView: View {
     @State private var annotationEditStartValue: Annotation?
     @State private var annotationEditPreview: Annotation?
     /// 当前标注工具：select 不接管拖动；arrow/rect/ellipse/pen/blur 接管选区内拖动为绘制
-    @State private var activeTool: AnnotationTool = .select
+    @State private var activeTool: AnnotationTool?
     /// 当前标注颜色（色板 8 色之一）
     @State private var annotationColor: RGBA = .red
     /// 当前标注粗细（三档；blur 工具不用此值，见 blurPenWidth）
@@ -60,8 +60,6 @@ struct SelectionView: View {
     @State private var textEditSession: TextEditSession?
     /// 文本编辑草稿（输入框绑定）
     @State private var textEditDraft: String = ""
-    /// 双击判定：最近一次点中「文本」标注的 id 与时间
-    @State private var textTapCandidate: (id: Annotation.ID, at: Date)?
     /// 模糊工具半径（pt，4...20）：固化进每笔标注（撤销后不受后续调节影响）；@AppStorage 跨会话记忆
     @AppStorage("blurRadius") private var blurRadius: Double = 8
     /// 模糊工具笔宽（pt，8...80）：打码范围大，独立于三档 annotationWidth；@AppStorage 跨会话记忆
@@ -85,6 +83,31 @@ struct SelectionView: View {
     @State private var toolbarDragging = false
     /// 拖动起始渲染点基线：onChanged 首帧从 toolbarPosition（nil 视作当时锚定点）解包，后续帧累加 translation
     @State private var toolbarDragBase: CGPoint = .zero
+
+    static func toggledTool(current: AnnotationTool?, tapped: AnnotationTool) -> AnnotationTool? {
+        current == tapped ? nil : tapped
+    }
+
+    static func blankInteraction(for tool: AnnotationTool?) -> BlankAnnotationInteraction {
+        guard let tool else { return .adjustSelection }
+        return tool == .text ? .createText : .draw(tool)
+    }
+
+    static func doubleTapAction(
+        at point: CGPoint,
+        tool: AnnotationTool?,
+        selectionSize: CGSize,
+        annotations: [Annotation]
+    ) -> AnnotationDoubleTapAction {
+        if let id = AnnotationEditor.hitTest(
+            annotations: annotations,
+            point: point,
+            selectionSize: selectionSize
+        ), let annotation = annotations.first(where: { $0.id == id }), case .text = annotation.kind {
+            return .editText(id)
+        }
+        return tool == nil ? .confirmCapture : .none
+    }
 
     private var annotations: [Annotation] { annotationHistory.current.annotations }
     private var selectedAnnotationID: Annotation.ID? { annotationHistory.current.selectedAnnotationID }
@@ -150,9 +173,6 @@ struct SelectionView: View {
             cursorState.tool = new
             if textEditSession != nil {
                 commitTextEdit()
-            }
-            if new != .select {
-                clearAnnotationSelection()
             }
             cancelAnnotationEdit()
             // 切工具必收面板：残留开启的面板跨工具存活时，新工具触发钮的互斥会把刚点开的
@@ -576,8 +596,7 @@ struct SelectionView: View {
 
     @ViewBuilder
     private func annotationSelectionOverlay(sel: CGRect) -> some View {
-        if activeTool == .select,
-           textEditSession == nil,
+        if textEditSession == nil,
            let selectedAnnotation = annotationEditPreview ?? selectedAnnotation {
             let stroke = Color(nsColor: .controlAccentColor)
             switch selectedAnnotation.kind {
@@ -656,44 +675,9 @@ struct SelectionView: View {
         }
     }
 
-    /// 调整态交互层：move 层（选区内拖动整体移动 + 双击确认）→ 8 个缩放手柄 → 标注绘制层
-    /// （工具激活时后渲染覆盖命中，move/边/角手势让位）
+    /// 调整态统一交互层：任何工具下都先命中已有标注；空白处才调整选区或创建当前工具。
     @ViewBuilder
     private func adjustmentLayers(in geo: GeometryProxy, sel: CGRect) -> some View {
-        if activeTool != .select {
-        // 选区内：拖动整体移动 + 双击确认。
-        // 命中泄漏根因：contentShape 必须放在 position 之前——position 把子视图包进
-        // 「占满全部可用空间」的定位容器（bounds = 整个 ZStack = 整屏），contentShape
-        // 挂在其后定义的命中形状就是容器全屏 bounds，遮罩区远处的拖动也能触发 move
-        // （自 V2 潜伏；挂在其前，命中形状 = 选区尺寸的子视图本身）
-        Color.clear
-            .frame(width: sel.width, height: sel.height)
-            .contentShape(Rectangle())
-            .position(x: sel.midX, y: sel.midY)
-            .gesture(
-                DragGesture(minimumDistance: 1, coordinateSpace: .named("sel"))
-                    .onChanged { value in
-                        // 双保险（防御层）：只有起点在选区内（±2pt 容差）才允许开始移动；
-                        // 只在起始判定（adjustKind == nil）时检查——移动中 selection 随拖拽
-                        // 平移，起点相对「当前选区」无参照意义，逐帧复查会把正常长拖误杀
-                        if adjustKind == nil {
-                            guard selection.insetBy(dx: -2, dy: -2).contains(value.startLocation) else { return }
-                            beginAdjust(.move, at: value.startLocation)
-                        }
-                        updateAdjust(to: value.location, in: geo.size)
-                    }
-                    .onEnded { value in
-                        // 同源防御：起点在选区外的手势结束不触碰状态（其开始已被 onChanged 拦截）；
-                        // 本层自己的 .move 结束照常清 adjustKind（不按已平移的当前选区复查起点）
-                        if adjustKind == .move || selection.insetBy(dx: -2, dy: -2).contains(value.startLocation) {
-                            adjustKind = nil
-                        }
-                    }
-            )
-            .onTapGesture(count: 2) { confirm() }
-        }
-
-        // 8 个缩放手柄（四角 + 四边中点）
         HandleLayer(selection: sel)
             .environment(\.adjustStarter) { kind, point in
                 beginAdjust(kind, at: point)
@@ -703,46 +687,7 @@ struct SelectionView: View {
             }
             .environment(\.adjustEnder) { adjustKind = nil }
 
-        if activeTool == .select {
-            annotationEditingLayer(in: geo, sel: sel)
-        }
-
-        // 文本工具：点选创建透明输入框（不走拖拽绘制）
-        if activeTool == .text {
-            Color.clear
-                .frame(width: sel.width, height: sel.height)
-                .contentShape(Rectangle())
-                .position(x: sel.midX, y: sel.midY)
-                .onTapGesture { location in
-                    if textEditSession != nil {
-                        commitTextEdit()
-                    }
-                    beginTextEdit(
-                        .creating(at: AnnotationGeometry.normalizedPoint(location, in: sel)),
-                        selection: sel
-                    )
-                }
-        }
-
-        // 标注绘制层：工具激活时渲染在 move 层/手柄之上——后渲染覆盖命中，
-        // move/边/角手势让位（双击确认随之失效，回车/按钮/右键仍可用）；
-        // 「选择」工具时本层不存在，恢复 move/手柄/双击现状。
-        // minimumDistance 0：原地点击也走 onChanged/onEnded（点一下的无效小标注由 isValid 丢弃）
-        if activeTool.takesOverDrag {
-            // 绘制层与 move 层同型泄漏：contentShape 同样移到 position 之前，
-            // 命中限定在选区尺寸内（否则绘制工具激活时遮罩区拖动会喂进 updateDrawing）
-            Color.clear
-                .frame(width: sel.width, height: sel.height)
-                .contentShape(Rectangle())
-                .position(x: sel.midX, y: sel.midY)
-                .gesture(
-                    DragGesture(minimumDistance: 0, coordinateSpace: .named("sel"))
-                        .onChanged { value in
-                            updateDrawing(to: value.location, start: value.startLocation, in: sel)
-                        }
-                        .onEnded { _ in commitDrawing(in: sel) }
-                )
-        }
+        annotationEditingLayer(in: geo, sel: sel)
     }
 
     private func annotationEditingLayer(in geo: GeometryProxy, sel: CGRect) -> some View {
@@ -755,15 +700,41 @@ struct SelectionView: View {
                     .onChanged { value in
                         routeSelectDrag(at: value.location, start: value.startLocation, selection: sel, bounds: geo.size)
                     }
-                    .onEnded { _ in
+                    .onEnded { value in
                         if activeAnnotationEdit != nil {
                             commitAnnotationEdit()
-                        } else {
+                            return
+                        }
+                        switch Self.blankInteraction(for: activeTool) {
+                        case .adjustSelection:
                             adjustKind = nil
+                        case .createText:
+                            guard textEditSession == nil else { return }
+                            beginTextEdit(
+                                .creating(at: AnnotationGeometry.normalizedPoint(value.startLocation, in: sel)),
+                                selection: sel
+                            )
+                        case .draw:
+                            commitDrawing(in: sel)
                         }
                     }
             )
-            .onTapGesture(count: 2) { confirm() }
+            .onTapGesture(count: 2, coordinateSpace: .named("sel")) { location in
+                let normalized = AnnotationGeometry.normalizedPoint(location, in: sel)
+                switch Self.doubleTapAction(
+                    at: normalized,
+                    tool: activeTool,
+                    selectionSize: sel.size,
+                    annotations: annotations
+                ) {
+                case let .editText(id):
+                    beginTextEdit(.editing(id), selection: sel)
+                case .confirmCapture:
+                    confirm()
+                case .none:
+                    break
+                }
+            }
     }
 
     private func routeSelectDrag(at point: CGPoint, start: CGPoint, selection: CGRect, bounds: CGSize) {
@@ -771,15 +742,21 @@ struct SelectionView: View {
             updateAnnotationEdit(to: point, selection: selection)
             return
         }
-        // 空白点击/拖拽退出标注上下文；仅提交 selection 状态，截图调整不写标注几何历史。
         if textEditSession != nil {
             commitTextEdit()
         }
         clearAnnotationSelection()
-        if adjustKind == nil {
-            beginAdjust(selectionHandle(at: start, in: selection) ?? .move, at: start)
+        switch Self.blankInteraction(for: activeTool) {
+        case .adjustSelection:
+            if adjustKind == nil {
+                beginAdjust(selectionHandle(at: start, in: selection) ?? .move, at: start)
+            }
+            updateAdjust(to: point, in: bounds)
+        case .createText:
+            break
+        case let .draw(tool):
+            updateDrawing(tool: tool, to: point, start: start, in: selection)
         }
-        updateAdjust(to: point, in: bounds)
     }
 
     private func selectionHandle(at point: CGPoint, in selection: CGRect) -> SelectionHandleKind? {
@@ -811,24 +788,9 @@ struct SelectionView: View {
         }
         if let id = AnnotationEditor.hitTest(annotations: annotations, point: normalizedPoint, selectionSize: selection.size),
            let annotation = annotations.first(where: { $0.id == id }) {
-            // 双击文本 → 进入重编辑；否则选中并可拖动
-            if case .text = annotation.kind {
-                let now = Date()
-                if let candidate = textTapCandidate,
-                   candidate.id == annotation.id,
-                   now.timeIntervalSince(candidate.at) < 0.35 {
-                    textTapCandidate = nil
-                    beginTextEdit(.editing(annotation.id), selection: selection)
-                    return true
-                }
-                textTapCandidate = (annotation.id, now)
-            } else {
-                textTapCandidate = nil
-            }
             beginAnnotationEdit(.move, at: normalizedPoint, annotation: annotation)
             return true
         }
-        textTapCandidate = nil
         return false
     }
 
@@ -1113,12 +1075,12 @@ struct SelectionView: View {
 
     /// 绘制中：把选区局部 point 归一化后写入 drawingAnnotation（clamp 由 normalizedPoint 承担）。
     /// arrow = 起点/终点两点；rect/ellipse = 两点 min/max 的归一化矩形；pen/blur = 采样去重后追加。
-    private func updateDrawing(to point: CGPoint, start: CGPoint, in sel: CGRect) {
+    private func updateDrawing(tool: AnnotationTool, to point: CGPoint, start: CGPoint, in sel: CGRect) {
         let color = annotationColor
         let width = annotationWidth.pt
-        switch activeTool {
-        case .select, .text:
-            break   // select 不接管拖动；text 点选创建编辑框，不走拖拽绘制
+        switch tool {
+        case .text:
+            break
         case .arrow:
             drawingAnnotation = Annotation(
                 kind: .arrow(start: AnnotationGeometry.normalizedPoint(start, in: sel),
@@ -1126,7 +1088,7 @@ struct SelectionView: View {
                 color: color, lineWidth: width)
         case .rect, .ellipse:
             let n = Self.normalizedRect(from: start, to: point, in: sel)
-            drawingAnnotation = Annotation(kind: activeTool == .rect ? Annotation.Kind.rect(n) : .ellipse(n),
+            drawingAnnotation = Annotation(kind: tool == .rect ? Annotation.Kind.rect(n) : .ellipse(n),
                                            color: color, lineWidth: width)
         case .pen:
             let p = AnnotationGeometry.normalizedPoint(point, in: sel)
@@ -1361,7 +1323,7 @@ struct SelectionView: View {
         if state.selection.contains(p) {
             if state.tool == .blur {
                 ringCursor(diameter: state.blurWidth).set()
-            } else if state.tool.takesOverDrag {
+            } else if state.tool?.takesOverDrag == true {
                 NSCursor.crosshair.set()
             } else if event.type == .leftMouseDragged {
                 NSCursor.closedHand.set()
@@ -1379,7 +1341,7 @@ struct SelectionView: View {
     /// 返回 Sendable 枚举而非 NSCursor，便于非隔离单测；applyCursor 再映射。
     static func annotationPointerCursorStyle(
         point: CGPoint,
-        tool: AnnotationTool,
+        tool: AnnotationTool?,
         selection: CGRect,
         annotations: [Annotation],
         selectedAnnotation: Annotation?,
@@ -1387,10 +1349,6 @@ struct SelectionView: View {
         isDragging: Bool
     ) -> AnnotationPointerCursorStyle? {
         guard SelectionGeometry.isValid(selection) else { return nil }
-        if tool == .text {
-            return selection.contains(point) ? .iBeam : nil
-        }
-        guard tool == .select else { return nil }
         let normalizedPoint = AnnotationGeometry.normalizedPoint(point, in: selection)
 
         if let selectedAnnotation,
@@ -1412,6 +1370,9 @@ struct SelectionView: View {
                selectionSize: selection.size
            ) != nil {
             return .arrow
+        }
+        if tool == .text, selection.contains(point) {
+            return .iBeam
         }
         return nil
     }
@@ -1519,7 +1480,7 @@ private final class CursorState {
     var selection: CGRect = .zero
     var viewHeight: CGFloat = 0
     /// 当前标注工具：绘制工具激活时选区内十字
-    var tool: AnnotationTool = .select
+    var tool: AnnotationTool?
     var selectedAnnotation: Annotation?
     var annotationEditTarget: AnnotationEditTarget?
     /// 当前文档标注快照：select 悬停 hitTest 用（与 click 路由同源）
@@ -1644,6 +1605,18 @@ private struct ToolbarTextButton: View {
     }
 }
 
+enum BlankAnnotationInteraction: Equatable {
+    case adjustSelection
+    case createText
+    case draw(AnnotationTool)
+}
+
+enum AnnotationDoubleTapAction: Equatable {
+    case none
+    case confirmCapture
+    case editText(Annotation.ID)
+}
+
 /// 文本编辑会话（创建 / 双击重编辑）
 enum TextEditSession: Equatable {
     case creating(at: CGPoint)
@@ -1743,7 +1716,7 @@ private struct PanelAnchorKey: PreferenceKey {
 /// pen 系显样式钮（色+宽合并触发）、blur 显宽钮（双滑块触发）。
 /// arrow/rect/ellipse/pen/blur 的绘制手势由 SelectionView 经 activeTool.takesOverDrag 接入选区拖动。
 private struct CaptureToolbar: View {
-    @Binding var tool: AnnotationTool
+    @Binding var tool: AnnotationTool?
     @Binding var color: RGBA
     @Binding var lineWidth: AnnotationWidth
     @Binding var fontSize: AnnotationFontSize
@@ -1873,15 +1846,24 @@ private struct CaptureToolbar: View {
     private func rowContent(measure: Bool) -> some View {
         HStack(spacing: 8) {
             HStack(spacing: 6) {
-                // 「move」在 macOS 26 SDK 缺失（NSImage(systemSymbolName:) 返回 nil）；cursorarrow 视觉不佳，
-                // 选择工具改用手型 hand.draw（probe 实证存在）
-                ToolbarIconButton(symbol: "hand.draw", selected: tool == .select, accessibilityLabel: "选择") { tool = .select }
-                ToolbarIconButton(symbol: "arrow.up.right", selected: tool == .arrow, accessibilityLabel: "箭头") { tool = .arrow }
-                ToolbarIconButton(symbol: "rectangle", selected: tool == .rect, accessibilityLabel: "矩形") { tool = .rect }
-                ToolbarIconButton(symbol: "circle", selected: tool == .ellipse, accessibilityLabel: "椭圆") { tool = .ellipse }
-                ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
-                ToolbarTextButton(selected: tool == .text) { tool = .text }
-                ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") { tool = .blur }
+                ToolbarIconButton(symbol: "arrow.up.right", selected: tool == .arrow, accessibilityLabel: "箭头") {
+                    tool = SelectionView.toggledTool(current: tool, tapped: .arrow)
+                }
+                ToolbarIconButton(symbol: "rectangle", selected: tool == .rect, accessibilityLabel: "矩形") {
+                    tool = SelectionView.toggledTool(current: tool, tapped: .rect)
+                }
+                ToolbarIconButton(symbol: "circle", selected: tool == .ellipse, accessibilityLabel: "椭圆") {
+                    tool = SelectionView.toggledTool(current: tool, tapped: .ellipse)
+                }
+                ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") {
+                    tool = SelectionView.toggledTool(current: tool, tapped: .pen)
+                }
+                ToolbarTextButton(selected: tool == .text) {
+                    tool = SelectionView.toggledTool(current: tool, tapped: .text)
+                }
+                ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") {
+                    tool = SelectionView.toggledTool(current: tool, tapped: .blur)
+                }
             }
             // 样式/宽度段左分隔符（**恒定**，在槽外）：样式槽 select 态收起时仍保证工具组
             // 与圆角钮之间有分隔（随槽收起会只剩留白）；pen/blur 态几何与随槽版完全一致
@@ -1936,7 +1918,9 @@ private struct CaptureToolbar: View {
     /// 显隐槽宽度单一公式源（与 rowContent 显隐槽内容一一对应）：样式/宽槽内容仅钮 24。
     /// select 无选中对象时继续编辑新建默认值，选中对象时改为编辑其样式；blur 使用独立宽钮。
     /// 撤销槽不走此公式（内容含左分隔符，恒 33，见 rowContent 调用处）。
-    private var revealSlotWidth: CGFloat { 24 }
+    private var revealSlotWidth: CGFloat {
+        tool == nil && selectedAnnotation == nil ? 0 : 24
+    }
 
     /// 背景拖动层（挂 mainRow 的 .background、且必须挂 .glassEffect 之前——顺序语义见
     /// mainRow 注释；尺寸被宿主约束 = 玻璃胶囊实际大小）：

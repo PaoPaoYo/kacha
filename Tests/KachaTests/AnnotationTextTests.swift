@@ -7,7 +7,6 @@ final class AnnotationTextTests: XCTestCase {
     func test_toolTextDoesNotTakeOverDragAsShapeDraw() {
         XCTAssertFalse(AnnotationTool.text.takesOverDrag)
         XCTAssertTrue(AnnotationTool.pen.takesOverDrag)
-        XCTAssertFalse(AnnotationTool.select.takesOverDrag)
     }
 
     func test_valid_textRequiresNonEmptyTrimmedString() {

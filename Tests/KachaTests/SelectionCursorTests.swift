@@ -14,7 +14,7 @@ final class SelectionCursorTests: XCTestCase {
 
         let style = SelectionView.annotationPointerCursorStyle(
             point: CGPoint(x: 180, y: 180),
-            tool: .select,
+            tool: .arrow,
             selection: selection,
             annotations: [rect],
             selectedAnnotation: nil,
@@ -29,7 +29,7 @@ final class SelectionCursorTests: XCTestCase {
     func test_selectHoverOnEmptySelectionReturnsNil() {
         let style = SelectionView.annotationPointerCursorStyle(
             point: CGPoint(x: 300, y: 300),
-            tool: .select,
+            tool: nil,
             selection: selection,
             annotations: [
                 Annotation(
@@ -47,7 +47,7 @@ final class SelectionCursorTests: XCTestCase {
     }
 
     @MainActor
-    func test_drawToolDoesNotClaimAnnotationHover() {
+    func test_drawToolStillClaimsExistingAnnotationHover() {
         let rect = Annotation(
             kind: .rect(CGRect(x: 0.2, y: 0.2, width: 0.5, height: 0.5)),
             color: .red,
@@ -64,7 +64,7 @@ final class SelectionCursorTests: XCTestCase {
             isDragging: false
         )
 
-        XCTAssertNil(style)
+        XCTAssertEqual(style, .arrow)
     }
 
     @MainActor
@@ -77,7 +77,7 @@ final class SelectionCursorTests: XCTestCase {
 
         let style = SelectionView.annotationPointerCursorStyle(
             point: CGPoint(x: 300, y: 300),
-            tool: .select,
+            tool: nil,
             selection: selection,
             annotations: [blur],
             selectedAnnotation: nil,
@@ -102,7 +102,7 @@ final class SelectionCursorTests: XCTestCase {
 
         let style = SelectionView.annotationPointerCursorStyle(
             point: endPoint,
-            tool: .select,
+            tool: nil,
             selection: selection,
             annotations: [arrow],
             selectedAnnotation: arrow,
@@ -124,7 +124,7 @@ final class SelectionCursorTests: XCTestCase {
         // 顶边描边中段、避开 top 手柄（中点）与四角 ±8pt 控制区
         let style = SelectionView.annotationPointerCursorStyle(
             point: CGPoint(x: 200, y: 180),
-            tool: .select,
+            tool: nil,
             selection: selection,
             annotations: [rect],
             selectedAnnotation: rect,
@@ -145,7 +145,7 @@ final class SelectionCursorTests: XCTestCase {
 
         let style = SelectionView.annotationPointerCursorStyle(
             point: CGPoint(x: 300, y: 300),
-            tool: .select,
+            tool: nil,
             selection: selection,
             annotations: [pen],
             selectedAnnotation: pen,
@@ -167,7 +167,7 @@ final class SelectionCursorTests: XCTestCase {
         // 空白/选区拖动中压过描边：不得返回箭头，否则抢走合掌/缩放手柄
         let style = SelectionView.annotationPointerCursorStyle(
             point: CGPoint(x: 180, y: 180),
-            tool: .select,
+            tool: nil,
             selection: selection,
             annotations: [rect],
             selectedAnnotation: nil,
@@ -188,7 +188,7 @@ final class SelectionCursorTests: XCTestCase {
 
         let style = SelectionView.annotationPointerCursorStyle(
             point: CGPoint(x: 180, y: 180),
-            tool: .select,
+            tool: nil,
             selection: .zero,
             annotations: [rect],
             selectedAnnotation: nil,
@@ -228,7 +228,7 @@ final class SelectionCursorTests: XCTestCase {
 
         let style = SelectionView.annotationPointerCursorStyle(
             point: onStroke,
-            tool: .select,
+            tool: nil,
             selection: selection,
             annotations: [pen],
             selectedAnnotation: nil,

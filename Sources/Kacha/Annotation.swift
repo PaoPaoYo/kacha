@@ -20,13 +20,8 @@ struct RGBA: Equatable {
 
 /// 标注工具；非 select/text 激活时接管选区内拖动为绘制（text 为点选创建，不走拖拽绘制）
 enum AnnotationTool: Equatable {
-    case select, arrow, rect, ellipse, pen, blur, text
-    var takesOverDrag: Bool {
-        switch self {
-        case .select, .text: false
-        case .arrow, .rect, .ellipse, .pen, .blur: true
-        }
-    }
+    case arrow, rect, ellipse, pen, blur, text
+    var takesOverDrag: Bool { self != .text }
 }
 
 /// 粗细三档（pt）
