@@ -181,4 +181,28 @@ final class AnnotationRendererTests: XCTestCase {
         let middle = pixel(out, 50, 50)
         XCTAssertGreaterThan(Int(middle.0) + Int(middle.1) + Int(middle.2), 700)
     }
+
+    func test_compositeRendersTextAtAnchor() {
+        let text = Annotation(
+            kind: .text(at: CGPoint(x: 0.1, y: 0.2), string: "Hi", fontSize: 24),
+            color: .black,
+            lineWidth: 4
+        )
+        let out = AnnotationRenderer.composite(
+            solidImage(.white, width: 100, height: 100),
+            annotations: [text],
+            selectionPointWidth: 100
+        )
+        var darkNearAnchor = false
+        for y in 18..<45 {
+            for x in 8..<55 {
+                let p = pixel(out, x, y)
+                if Int(p.0) + Int(p.1) + Int(p.2) < 400 {
+                    darkNearAnchor = true
+                }
+            }
+        }
+        XCTAssertTrue(darkNearAnchor, "expected dark text pixels near anchor")
+        XCTAssertWhite(pixel(out, 95, 5))
+    }
 }

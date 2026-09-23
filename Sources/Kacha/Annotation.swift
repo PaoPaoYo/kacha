@@ -147,8 +147,9 @@ enum AnnotationTextLayout {
         return CGRect(origin: origin, size: size)
     }
 
-    /// CGContext 绘制文本块。调用方坐标系须为左上原点（选区局部 point 空间）；
-    /// 内部将 CoreText 翻转到左下原点后 CTFrameDraw。
+    /// CGContext 绘制文本块。调用方坐标系须为左上原点（选区局部 point 空间）。
+    /// 用 flipped NSGraphicsContext + NSAttributedString.draw，避免 CoreText 在
+    /// 已翻转 CGContext 上二次翻转导致字形落到画布外。
     static func draw(
         _ context: CGContext,
         string: String,
@@ -159,25 +160,13 @@ enum AnnotationTextLayout {
     ) {
         guard !string.isEmpty, maxWidth > 0 else { return }
         let attributed = attributedString(string: string, fontSize: fontSize, color: color)
-        let framesetter = CTFramesetterCreateWithAttributedString(attributed)
-        let measure = size(string: string, fontSize: fontSize, maxWidth: maxWidth)
-        guard measure.height > 0 else { return }
-        let path = CGPath(
-            rect: CGRect(x: 0, y: 0, width: maxWidth, height: measure.height),
-            transform: nil
-        )
-        let frame = CTFramesetterCreateFrame(
-            framesetter,
-            CFRange(location: 0, length: attributed.length),
-            path,
-            nil
-        )
         context.saveGState()
-        // 左上原点 → 文本局部左下原点（CTFrame 原点在 path 左下）
-        context.translateBy(x: origin.x, y: origin.y + measure.height)
-        context.scaleBy(x: 1, y: -1)
-        context.textMatrix = .identity
-        CTFrameDraw(frame, context)
+        let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = nsContext
+        let bounds = CGRect(origin: origin, size: size(string: string, fontSize: fontSize, maxWidth: maxWidth))
+        attributed.draw(with: bounds, options: [.usesLineFragmentOrigin], context: nil)
+        NSGraphicsContext.restoreGraphicsState()
         context.restoreGState()
     }
 }
