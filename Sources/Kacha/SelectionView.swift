@@ -62,7 +62,6 @@ struct SelectionView: View {
     @State private var textEditDraft: String = ""
     /// 双击判定：最近一次点中「文本」标注的 id 与时间
     @State private var textTapCandidate: (id: Annotation.ID, at: Date)?
-    @FocusState private var textEditorFocused: Bool
     /// 模糊工具半径（pt，4...20）：固化进每笔标注（撤销后不受后续调节影响）；@AppStorage 跨会话记忆
     @AppStorage("blurRadius") private var blurRadius: Double = 8
     /// 模糊工具笔宽（pt，8...80）：打码范围大，独立于三档 annotationWidth；@AppStorage 跨会话记忆
@@ -228,6 +227,13 @@ struct SelectionView: View {
                 // keyDown local monitor 路径：点击选中后焦点常不在 focusable 视图，onKeyPress 收不到
                 removeSelectedAnnotation()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .kachaCancelOverlay)) { notification in
+                // 多屏每屏各有 SelectionView；只处理产生按键的屏，避免一次 Esc 多次回调。
+                guard let screen = notification.object as? NSScreen, screen === frame.screen else { return }
+                cancelTextEdit()
+                cancelAnnotationEdit()
+                onCancel()
+            }
             .onExitCommand {
                 cancelAnnotationEdit()
                 onCancel()
@@ -362,13 +368,21 @@ struct SelectionView: View {
     private func installKeyMonitor() {
         removeKeyMonitor()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard Self.keyCommand(
+            switch Self.keyCommand(
                 keyCode: event.keyCode,
                 modifiers: event.modifierFlags,
                 hasSelectedAnnotation: cursorState.selectedAnnotation != nil
-            ) == .deleteSelectedAnnotation else { return event }
-            NotificationCenter.default.post(name: .kachaDeleteSelectedAnnotation, object: nil)
-            return nil
+            ) {
+            case .deleteSelectedAnnotation:
+                NotificationCenter.default.post(name: .kachaDeleteSelectedAnnotation, object: nil)
+                return nil
+            case .cancelOverlay:
+                guard event.window?.screen === frame.screen else { return event }
+                NotificationCenter.default.post(name: .kachaCancelOverlay, object: frame.screen)
+                return nil
+            case nil:
+                return event
+            }
         }
     }
 
@@ -379,6 +393,7 @@ struct SelectionView: View {
         modifiers: NSEvent.ModifierFlags,
         hasSelectedAnnotation: Bool
     ) -> SelectionKeyCommand? {
+        if keyCode == UInt16(kVK_Escape) { return .cancelOverlay }
         guard hasSelectedAnnotation else { return nil }
         guard keyCode == UInt16(kVK_Delete) || keyCode == UInt16(kVK_ForwardDelete) else { return nil }
         guard modifiers.intersection([.command, .option, .control]).isEmpty else { return nil }
@@ -891,9 +906,6 @@ struct SelectionView: View {
                 return
             }
         }
-        DispatchQueue.main.async {
-            textEditorFocused = true
-        }
         _ = selection
     }
 
@@ -901,7 +913,6 @@ struct SelectionView: View {
     private func commitTextEdit() {
         guard let session = textEditSession else { return }
         textEditSession = nil
-        textEditorFocused = false
         let trimmed = textEditDraft
         textEditDraft = ""
         switch session {
@@ -934,7 +945,6 @@ struct SelectionView: View {
     private func cancelTextEdit() {
         textEditSession = nil
         textEditDraft = ""
-        textEditorFocused = false
     }
 
     private func updateAnnotationFontSize(_ size: AnnotationFontSize) {
@@ -987,42 +997,34 @@ struct SelectionView: View {
                let a = annotations.first(where: { $0.id == id }) { return a.color }
             return annotationColor
         }()
-        let foreground = Color(
-            red: editorColor.r,
-            green: editorColor.g,
-            blue: editorColor.b,
-            opacity: editorColor.a
-        )
         let editorWidth = layoutRect.width
         let editorHeight = max(layoutRect.height, fontSize + 4)
 
-        TextEditor(text: $textEditDraft)
-            .font(.system(size: fontSize))
-            .foregroundStyle(foreground)
-            .textEditorStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .contentMargins(0, for: .scrollContent)
-            .background(Color.clear)
-            .overlay(alignment: .topLeading) {
-                if textEditDraft.isEmpty {
-                    Text("输入文字…")
-                        .font(.system(size: fontSize))
-                        .foregroundStyle(.secondary)
-                        .allowsHitTesting(false)
-                }
+        TextAnnotationEditorView(
+            text: $textEditDraft,
+            fontSize: fontSize,
+            color: NSColor(
+                red: editorColor.r,
+                green: editorColor.g,
+                blue: editorColor.b,
+                alpha: editorColor.a
+            ),
+            onCommit: commitTextEdit
+        )
+        .overlay(alignment: .topLeading) {
+            if textEditDraft.isEmpty {
+                Text("输入文字…")
+                    .font(.system(size: fontSize))
+                    .foregroundStyle(.secondary)
+                    .allowsHitTesting(false)
             }
-            .frame(width: editorWidth, height: editorHeight)
-            .overlay {
-                RoundedRectangle(cornerRadius: 2)
-                    .stroke(Color(nsColor: .controlAccentColor), lineWidth: 1)
-            }
-            .position(x: layoutRect.midX, y: layoutRect.minY + editorHeight / 2)
-            .focused($textEditorFocused)
-            .onExitCommand { cancelTextEdit() }
-            .onKeyPress(.return) {
-                commitTextEdit()
-                return .handled
-            }
+        }
+        .frame(width: editorWidth, height: editorHeight)
+        .overlay {
+            RoundedRectangle(cornerRadius: 2)
+                .stroke(Color(nsColor: .controlAccentColor), lineWidth: 1)
+        }
+        .position(x: layoutRect.midX, y: layoutRect.minY + editorHeight / 2)
     }
 
     private func updateAnnotationColor(_ color: RGBA) {
@@ -1547,6 +1549,7 @@ enum AnnotationPointerCursorStyle: Equatable, Sendable {
 /// 覆盖层按键命令（keyDown monitor / 纯决策用）
 enum SelectionKeyCommand: Equatable, Sendable {
     case deleteSelectedAnnotation
+    case cancelOverlay
 }
 
 /// 调整态可拖拽的部位：8 个手柄 + 选区内部（整体移动）

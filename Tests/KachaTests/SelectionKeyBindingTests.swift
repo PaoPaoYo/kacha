@@ -54,4 +54,15 @@ final class SelectionKeyBindingTests: XCTestCase {
             )
         )
     }
+
+    func test_escapeRequestsOverlayCancellationWithoutSelection() {
+        XCTAssertEqual(
+            SelectionView.keyCommand(
+                keyCode: UInt16(kVK_Escape),
+                modifiers: [],
+                hasSelectedAnnotation: false
+            ),
+            .cancelOverlay
+        )
+    }
 }

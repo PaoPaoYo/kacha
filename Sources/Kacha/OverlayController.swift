@@ -13,6 +13,7 @@ extension Notification.Name {
     static let kachaOverlayDismissed = Notification.Name("kachaOverlayDismissed")
     /// keyDown monitor 判定应删除选中标注（焦点不在 SwiftUI focusable 时 onKeyPress 收不到）
     static let kachaDeleteSelectedAnnotation = Notification.Name("kachaDeleteSelectedAnnotation")
+    static let kachaCancelOverlay = Notification.Name("kachaCancelOverlay")
 }
 
 @MainActor
