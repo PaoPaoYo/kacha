@@ -5,6 +5,7 @@ import SwiftUI
 enum SettingsLayout {
     static let minimumWidth: CGFloat = 480
     static let minimumHeight: CGFloat = 280
+    static let usesTabNavigation = false
 }
 
 struct SettingsView: View {
@@ -13,18 +14,28 @@ struct SettingsView: View {
     @State private var isRecording = false
     @State private var recordingMonitor: Any?
 
+    @ViewBuilder
     var body: some View {
-        TabView {
+        if SettingsLayout.usesTabNavigation {
+            TabView {
+                form
+                    .tabItem {
+                        Label("基础", systemImage: "gearshape")
+                    }
+            }
+            .frame(
+                minWidth: SettingsLayout.minimumWidth,
+                minHeight: SettingsLayout.minimumHeight
+            )
+            .onDisappear(perform: cancelRecording)
+        } else {
             form
-                .tabItem {
-                    Label("基础", systemImage: "gearshape")
-                }
+                .frame(
+                    minWidth: SettingsLayout.minimumWidth,
+                    minHeight: SettingsLayout.minimumHeight
+                )
+                .onDisappear(perform: cancelRecording)
         }
-        .frame(
-            minWidth: SettingsLayout.minimumWidth,
-            minHeight: SettingsLayout.minimumHeight
-        )
-        .onDisappear(perform: cancelRecording)
     }
 
     private var form: some View {

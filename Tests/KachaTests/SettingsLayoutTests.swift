@@ -6,4 +6,8 @@ final class SettingsLayoutTests: XCTestCase {
         XCTAssertEqual(SettingsLayout.minimumWidth, 480)
         XCTAssertEqual(SettingsLayout.minimumHeight, 280)
     }
+
+    func test_singleSettingsPaneDoesNotUseTabNavigation() {
+        XCTAssertFalse(SettingsLayout.usesTabNavigation)
+    }
 }
