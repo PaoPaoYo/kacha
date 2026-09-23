@@ -200,6 +200,21 @@ final class SelectionCursorTests: XCTestCase {
     }
 
     @MainActor
+    func test_textToolUsesIBeamInsideSelection() {
+        let style = SelectionView.annotationPointerCursorStyle(
+            point: CGPoint(x: 300, y: 300),
+            tool: .text,
+            selection: selection,
+            annotations: [],
+            selectedAnnotation: nil,
+            activeEditTarget: nil,
+            isDragging: false
+        )
+
+        XCTAssertEqual(style, .iBeam)
+    }
+
+    @MainActor
     func test_unselectedPenStrokeReturnsArrowCursor() {
         let pen = Annotation(
             kind: .pen(points: [CGPoint(x: 0.3, y: 0.3), CGPoint(x: 0.7, y: 0.7)]),

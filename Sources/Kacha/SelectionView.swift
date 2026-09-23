@@ -530,10 +530,10 @@ struct SelectionView: View {
                     }
                     continue
                 }
-                if case let .text(at, string, fontSize) = a.kind {
+                if case let .text(at, string, fontSize, width) = a.kind {
                     // 预览用 SwiftUI Text（与导出同字号/同 maxWidth 折行语义）；不描边包围盒
                     let local = AnnotationTextLayout.localRect(
-                        at: at, string: string, fontSize: fontSize, selection: sel
+                        at: at, string: string, fontSize: fontSize, width: width, selection: sel
                     )
                     let textColor = Color(red: a.color.r, green: a.color.g, blue: a.color.b, opacity: a.color.a)
                     let resolved = context.resolve(
@@ -541,7 +541,7 @@ struct SelectionView: View {
                             .font(.system(size: fontSize))
                             .foregroundStyle(textColor)
                     )
-                    ctx.draw(resolved, at: CGPoint(x: local.minX, y: local.minY), anchor: .topLeading)
+                    ctx.draw(resolved, in: local)
                     continue
                 }
                 let color = Color(red: a.color.r, green: a.color.g, blue: a.color.b, opacity: a.color.a)
@@ -561,7 +561,9 @@ struct SelectionView: View {
 
     @ViewBuilder
     private func annotationSelectionOverlay(sel: CGRect) -> some View {
-        if activeTool == .select, let selectedAnnotation = annotationEditPreview ?? selectedAnnotation {
+        if activeTool == .select,
+           textEditSession == nil,
+           let selectedAnnotation = annotationEditPreview ?? selectedAnnotation {
             let stroke = Color(nsColor: .controlAccentColor)
             switch selectedAnnotation.kind {
             case let .arrow(start, end):
@@ -595,14 +597,22 @@ struct SelectionView: View {
                         .frame(width: bounds.width * sel.width, height: bounds.height * sel.height)
                         .position(x: bounds.midX * sel.width, y: bounds.midY * sel.height)
                 }
-            case let .text(at, string, fontSize):
+            case let .text(at, string, fontSize, width):
                 let local = AnnotationTextLayout.localRect(
-                    at: at, string: string, fontSize: fontSize, selection: sel
+                    at: at,
+                    string: string,
+                    fontSize: fontSize,
+                    width: width,
+                    selection: CGRect(origin: .zero, size: sel.size)
                 )
                 Rectangle()
                     .stroke(stroke, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     .frame(width: local.width, height: local.height)
                     .position(x: local.midX, y: local.midY)
+                Circle()
+                    .fill(stroke)
+                    .frame(width: 8, height: 8)
+                    .position(x: local.maxX, y: local.midY)
             case .blur:
                 EmptyView()
             }
@@ -873,7 +883,7 @@ struct SelectionView: View {
             textEditDraft = ""
         case let .editing(id):
             if let annotation = annotations.first(where: { $0.id == id }),
-               case let .text(_, string, _) = annotation.kind {
+               case let .text(_, string, _, _) = annotation.kind {
                 textEditDraft = string
                 commitAnnotationState(annotations: annotations, selectedAnnotationID: id)
             } else {
@@ -947,7 +957,7 @@ struct SelectionView: View {
                 return at
             case let .editing(id):
                 if let a = annotations.first(where: { $0.id == id }),
-                   case let .text(at, _, _) = a.kind { return at }
+                   case let .text(at, _, _, _) = a.kind { return at }
                 return .zero
             case nil:
                 return .zero
@@ -956,36 +966,57 @@ struct SelectionView: View {
         let fontSize: CGFloat = {
             if case let .editing(id) = session,
                let a = annotations.first(where: { $0.id == id }),
-               case let .text(_, _, size) = a.kind { return size }
+               case let .text(_, _, size, _) = a.kind { return size }
             return annotationFontSize.pt
         }()
-        let origin = AnnotationGeometry.localPoint(anchor, in: sel)
-        let maxWidth = AnnotationTextLayout.maxWidth(forSelectionWidth: sel.width)
+        let fixedWidth: CGFloat? = {
+            if case let .editing(id) = session,
+               let a = annotations.first(where: { $0.id == id }),
+               case let .text(_, _, _, width) = a.kind { return width }
+            return nil
+        }()
+        let layoutRect = AnnotationTextLayout.localRect(
+            at: anchor,
+            string: textEditDraft.isEmpty ? "A" : textEditDraft,
+            fontSize: fontSize,
+            width: fixedWidth,
+            selection: sel
+        )
+        let editorColor: RGBA = {
+            if case let .editing(id) = session,
+               let a = annotations.first(where: { $0.id == id }) { return a.color }
+            return annotationColor
+        }()
+        let foreground = Color(
+            red: editorColor.r,
+            green: editorColor.g,
+            blue: editorColor.b,
+            opacity: editorColor.a
+        )
+        let editorWidth = layoutRect.width
+        let editorHeight = max(layoutRect.height, fontSize + 4)
 
         TextEditor(text: $textEditDraft)
             .font(.system(size: fontSize))
+            .foregroundStyle(foreground)
+            .textEditorStyle(.plain)
             .scrollContentBackground(.hidden)
+            .contentMargins(0, for: .scrollContent)
             .background(Color.clear)
             .overlay(alignment: .topLeading) {
                 if textEditDraft.isEmpty {
                     Text("输入文字…")
                         .font(.system(size: fontSize))
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 8)
                         .allowsHitTesting(false)
                 }
             }
-            .padding(4)
-            .frame(width: maxWidth, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.35))
+            .frame(width: editorWidth, height: editorHeight)
             .overlay {
-                RoundedRectangle(cornerRadius: 4)
+                RoundedRectangle(cornerRadius: 2)
                     .stroke(Color(nsColor: .controlAccentColor), lineWidth: 1)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-            .position(x: origin.x + maxWidth / 2, y: origin.y + 24)
+            .position(x: layoutRect.midX, y: layoutRect.minY + editorHeight / 2)
             .focused($textEditorFocused)
             .onExitCommand { cancelTextEdit() }
             .onKeyPress(.return) {
@@ -1353,7 +1384,11 @@ struct SelectionView: View {
         activeEditTarget: AnnotationEditTarget?,
         isDragging: Bool
     ) -> AnnotationPointerCursorStyle? {
-        guard tool == .select, SelectionGeometry.isValid(selection) else { return nil }
+        guard SelectionGeometry.isValid(selection) else { return nil }
+        if tool == .text {
+            return selection.contains(point) ? .iBeam : nil
+        }
+        guard tool == .select else { return nil }
         let normalizedPoint = AnnotationGeometry.normalizedPoint(point, in: selection)
 
         if let selectedAnnotation,
@@ -1388,6 +1423,8 @@ struct SelectionView: View {
             .crosshair
         case .move:
             isDragging ? .closedHand : .openHand
+        case .textWidth:
+            .resizeHorizontal
         case let .resize(handle):
             switch handle {
             case .topLeft, .bottomRight:
@@ -1406,6 +1443,8 @@ struct SelectionView: View {
         switch style {
         case .arrow:
             .arrow
+        case .iBeam:
+            .iBeam
         case .crosshair:
             .crosshair
         case .openHand:
@@ -1495,6 +1534,7 @@ private final class CursorState {
 /// 标注指针光标样式（Sendable，避免 NSCursor 跨 actor 返回）
 enum AnnotationPointerCursorStyle: Equatable, Sendable {
     case arrow
+    case iBeam
     case crosshair
     case openHand
     case closedHand
@@ -1574,6 +1614,30 @@ private struct ToolbarIconButton: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
+    }
+}
+
+/// 文本工具专用按钮：直接显示大写 A，与图标按钮共享尺寸和选中态。
+private struct ToolbarTextButton: View {
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text("A")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(selected ? Color.white : Color.primary)
+                .frame(width: 24, height: 24)
+                .background {
+                    if selected {
+                        Circle().fill(Color(nsColor: .controlAccentColor))
+                            .frame(width: 20, height: 20)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("文本")
     }
 }
 
@@ -1730,7 +1794,7 @@ private struct CaptureToolbar: View {
         return false
     }
     private var displayedFontSize: AnnotationFontSize {
-        if let selectedAnnotation, case let .text(_, _, size) = selectedAnnotation.kind {
+        if let selectedAnnotation, case let .text(_, _, size, _) = selectedAnnotation.kind {
             return AnnotationFontSize.nearest(size)
         }
         return fontSize
@@ -1813,7 +1877,7 @@ private struct CaptureToolbar: View {
                 ToolbarIconButton(symbol: "rectangle", selected: tool == .rect, accessibilityLabel: "矩形") { tool = .rect }
                 ToolbarIconButton(symbol: "circle", selected: tool == .ellipse, accessibilityLabel: "椭圆") { tool = .ellipse }
                 ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
-                ToolbarIconButton(symbol: "textformat", selected: tool == .text, accessibilityLabel: "文本") { tool = .text }
+                ToolbarTextButton(selected: tool == .text) { tool = .text }
                 ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") { tool = .blur }
             }
             // 样式/宽度段左分隔符（**恒定**，在槽外）：样式槽 select 态收起时仍保证工具组

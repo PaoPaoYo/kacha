@@ -5,6 +5,7 @@ enum AnnotationEditTarget: Equatable {
     case move
     case arrowStart
     case arrowEnd
+    case textWidth
     case resize(AnnotationResizeHandle)
 }
 
@@ -55,8 +56,13 @@ struct AnnotationEditor {
             break
         case .blur:
             return nil
-        case .text:
-            break
+        case let .text(at, string, fontSize, width):
+            let selection = CGRect(origin: .zero, size: selectionSize)
+            let bounds = AnnotationTextLayout.localRect(
+                at: at, string: string, fontSize: fontSize, width: width, selection: selection
+            )
+            let handle = CGPoint(x: bounds.maxX / selectionSize.width, y: bounds.midY / selectionSize.height)
+            if isNear(point, handle, selectionSize: selectionSize) { return .textWidth }
         }
 
         return pathContains(annotation: annotation, point: point, selectionSize: selectionSize) ? .move : nil
@@ -90,13 +96,17 @@ struct AnnotationEditor {
             kind = .rect(resized(bounds: bounds, handle: handle, to: to))
         case let (.ellipse(bounds), .resize(handle)):
             kind = .ellipse(resized(bounds: bounds, handle: handle, to: to))
-        case let (.text(at, string, fontSize), .move):
+        case let (.text(at, string, fontSize, width), .move):
             // 单锚点：直接加 delta 后 clamp 到 0...1（多点 limiting 会因 x 越界连带缩 y）
             kind = .text(
                 at: clamped(CGPoint(x: at.x + delta.x, y: at.y + delta.y)),
                 string: string,
-                fontSize: fontSize
+                fontSize: fontSize,
+                width: width
             )
+        case let (.text(at, string, fontSize, _), .textWidth):
+            let width = min(max(to.x - at.x, 0.01), 1 - at.x)
+            kind = .text(at: at, string: string, fontSize: fontSize, width: width)
         default:
             return annotation
         }
@@ -111,10 +121,10 @@ struct AnnotationEditor {
 
     /// 替换文本内容（保留 id/颜色/字号/锚点）
     static func updatingText(_ annotation: Annotation, string: String) -> Annotation {
-        guard case let .text(at, _, fontSize) = annotation.kind else { return annotation }
+        guard case let .text(at, _, fontSize, width) = annotation.kind else { return annotation }
         return Annotation(
             id: annotation.id,
-            kind: .text(at: at, string: string, fontSize: fontSize),
+            kind: .text(at: at, string: string, fontSize: fontSize, width: width),
             color: annotation.color,
             lineWidth: annotation.lineWidth
         )
@@ -122,10 +132,10 @@ struct AnnotationEditor {
 
     /// 替换字号（保留 id/颜色/文案/锚点）
     static func updatingFontSize(_ annotation: Annotation, fontSize: CGFloat) -> Annotation {
-        guard case let .text(at, string, _) = annotation.kind else { return annotation }
+        guard case let .text(at, string, _, width) = annotation.kind else { return annotation }
         return Annotation(
             id: annotation.id,
-            kind: .text(at: at, string: string, fontSize: fontSize),
+            kind: .text(at: at, string: string, fontSize: fontSize, width: width),
             color: annotation.color,
             lineWidth: annotation.lineWidth
         )

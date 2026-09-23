@@ -50,15 +50,17 @@ enum AnnotationRenderer {
                 }
                 continue
             }
-            if case let .text(at, string, fontSize) = a.kind {
-                let origin = AnnotationGeometry.localPoint(at, in: selection)
+            if case let .text(at, string, fontSize, width) = a.kind {
+                let rect = AnnotationTextLayout.localRect(
+                    at: at, string: string, fontSize: fontSize, width: width, selection: selection
+                )
                 AnnotationTextLayout.draw(
                     ctx,
                     string: string,
                     fontSize: fontSize,
                     color: a.color,
-                    at: origin,
-                    maxWidth: AnnotationTextLayout.maxWidth(forSelectionWidth: selection.width)
+                    at: rect.origin,
+                    maxWidth: rect.width
                 )
                 continue
             }

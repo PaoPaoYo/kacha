@@ -81,7 +81,7 @@ struct Annotation: Identifiable, Equatable {
         case ellipse(CGRect)                      // 归一化
         case pen(points: [CGPoint])               // 归一化
         case blur(points: [CGPoint], radius: CGFloat)  // 归一化（复用 pen 采样/去重/有效性；颜色不参与渲染；半径 pt 固化于每笔，撤销不受后续调节影响）
-        case text(at: CGPoint, string: String, fontSize: CGFloat)  // at 归一化左上锚点；fontSize 绝对 pt
+        case text(at: CGPoint, string: String, fontSize: CGFloat, width: CGFloat? = nil)  // at/width 归一化；nil = 自动宽度
     }
 
     let id: UUID
@@ -134,17 +134,35 @@ enum AnnotationTextLayout {
         return CGSize(width: ceil(min(rect.width, maxWidth)), height: ceil(rect.height))
     }
 
-    /// 文本在选区局部坐标中的包围矩形
+    /// 文本在选区局部坐标中的包围矩形。自动宽度随内容增长但不越过选区右边界；
+    /// 固定宽度保留用户拖拽结果，即使文案变短也不回缩。
+    static func localRect(
+        at normalized: CGPoint,
+        string: String,
+        fontSize: CGFloat,
+        width: CGFloat?,
+        selection: CGRect
+    ) -> CGRect {
+        let origin = AnnotationGeometry.localPoint(normalized, in: selection)
+        let availableWidth = max(selection.maxX - origin.x, 1)
+        let layoutWidth: CGFloat
+        if let width {
+            layoutWidth = min(max(width * selection.width, fontSize), availableWidth)
+        } else {
+            let natural = size(string: string, fontSize: fontSize, maxWidth: 100_000)
+            layoutWidth = min(max(natural.width, fontSize), availableWidth)
+        }
+        let measured = size(string: string, fontSize: fontSize, maxWidth: layoutWidth)
+        return CGRect(origin: origin, size: CGSize(width: layoutWidth, height: measured.height))
+    }
+
     static func localRect(
         at normalized: CGPoint,
         string: String,
         fontSize: CGFloat,
         selection: CGRect
     ) -> CGRect {
-        let origin = AnnotationGeometry.localPoint(normalized, in: selection)
-        let maxW = maxWidth(forSelectionWidth: selection.width)
-        let size = size(string: string, fontSize: fontSize, maxWidth: maxW)
-        return CGRect(origin: origin, size: size)
+        localRect(at: normalized, string: string, fontSize: fontSize, width: nil, selection: selection)
     }
 
     /// CGContext 绘制文本块。调用方坐标系须为左上原点（选区局部 point 空间）。
@@ -242,9 +260,9 @@ enum AnnotationGeometry {
             for p in points.dropFirst() {
                 path.addLine(to: localPoint(p, in: selection))
             }
-        case let .text(at, string, fontSize):
+        case let .text(at, string, fontSize, width):
             path.addRect(AnnotationTextLayout.localRect(
-                at: at, string: string, fontSize: fontSize, selection: selection
+                at: at, string: string, fontSize: fontSize, width: width, selection: selection
             ))
         }
         return path
@@ -265,7 +283,7 @@ enum AnnotationGeometry {
             return max(n.width * selectionSize.width, n.height * selectionSize.height) >= minimum
         case let .pen(points), let .blur(points, _):
             return points.count >= 2
-        case let .text(_, string, _):
+        case let .text(_, string, _, _):
             return !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }

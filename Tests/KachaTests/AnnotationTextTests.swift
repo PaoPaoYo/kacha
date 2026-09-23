@@ -38,7 +38,7 @@ final class AnnotationTextTests: XCTestCase {
         let kind = Annotation.Kind.text(at: CGPoint(x: 0, y: 0), string: line, fontSize: 24)
         let path = AnnotationGeometry.path(for: kind, in: CGRect(origin: .zero, size: selectionSize), lineWidth: 4)
         XCTAssertGreaterThan(path.boundingBox.height, 24 * 1.5)
-        XCTAssertLessThanOrEqual(path.boundingBox.width, selectionSize.width * 0.9 + 1)
+        XCTAssertLessThanOrEqual(path.boundingBox.width, selectionSize.width + 1)
     }
 
     func test_hitTest_textInteriorHits() {
@@ -84,7 +84,7 @@ final class AnnotationTextTests: XCTestCase {
             from: CGPoint(x: 0.8, y: 0.2),
             to: CGPoint(x: 1.2, y: 0.1)
         )
-        guard case let .text(at, string, fontSize) = result.kind else {
+        guard case let .text(at, string, fontSize, _) = result.kind else {
             return XCTFail("expected text, got \(result.kind)")
         }
         XCTAssertEqual(at.x, 1, accuracy: 0.0001)
@@ -96,18 +96,19 @@ final class AnnotationTextTests: XCTestCase {
 
     func test_updatingTextPreservesIdAndFontSize() {
         let text = Annotation(
-            kind: .text(at: CGPoint(x: 0.1, y: 0.1), string: "old", fontSize: 24),
+            kind: .text(at: CGPoint(x: 0.1, y: 0.1), string: "old", fontSize: 24, width: 0.4),
             color: .green,
             lineWidth: 4
         )
         let updated = AnnotationEditor.updatingText(text, string: "new\nline")
         XCTAssertEqual(updated.id, text.id)
         XCTAssertEqual(updated.color, text.color)
-        guard case let .text(at, string, fontSize) = updated.kind else {
+        guard case let .text(at, string, fontSize, width) = updated.kind else {
             return XCTFail("expected text")
         }
         XCTAssertEqual(string, "new\nline")
         XCTAssertEqual(fontSize, 24)
+        XCTAssertEqual(width, 0.4)
         XCTAssertEqual(at, CGPoint(x: 0.1, y: 0.1))
     }
 
@@ -119,7 +120,7 @@ final class AnnotationTextTests: XCTestCase {
         )
         let updated = AnnotationEditor.updatingFontSize(text, fontSize: 36)
         XCTAssertEqual(updated.id, text.id)
-        guard case let .text(_, string, fontSize) = updated.kind else {
+        guard case let .text(_, string, fontSize, _) = updated.kind else {
             return XCTFail("expected text")
         }
         XCTAssertEqual(string, "size")
@@ -150,5 +151,82 @@ final class AnnotationTextTests: XCTestCase {
         let one = AnnotationTextLayout.size(string: "A", fontSize: 16, maxWidth: 400)
         let multi = AnnotationTextLayout.size(string: "A\nB\nC", fontSize: 16, maxWidth: 400)
         XCTAssertGreaterThan(multi.height, one.height + 16)
+    }
+
+    func test_autoWidthFollowsShortTextInsteadOfFillingSelection() {
+        let selection = CGRect(origin: .zero, size: selectionSize)
+        let rect = AnnotationTextLayout.localRect(
+            at: CGPoint(x: 0.1, y: 0.2),
+            string: "Hi",
+            fontSize: 24,
+            width: nil,
+            selection: selection
+        )
+
+        XCTAssertLessThan(rect.width, 80)
+        XCTAssertLessThanOrEqual(rect.maxX, selection.maxX)
+    }
+
+    func test_autoWidthStopsAtRemainingSelectionWidthAndWraps() {
+        let selection = CGRect(origin: .zero, size: selectionSize)
+        let rect = AnnotationTextLayout.localRect(
+            at: CGPoint(x: 0.75, y: 0.1),
+            string: String(repeating: "W", count: 30),
+            fontSize: 24,
+            width: nil,
+            selection: selection
+        )
+
+        XCTAssertEqual(rect.width, 100, accuracy: 1)
+        XCTAssertGreaterThan(rect.height, 30)
+    }
+
+    func test_fixedWidthIsPreservedForShortText() {
+        let selection = CGRect(origin: .zero, size: selectionSize)
+        let rect = AnnotationTextLayout.localRect(
+            at: CGPoint(x: 0.1, y: 0.2),
+            string: "Hi",
+            fontSize: 24,
+            width: 0.5,
+            selection: selection
+        )
+
+        XCTAssertEqual(rect.width, 200, accuracy: 1)
+    }
+
+    func test_targetTextWidthHandleReturnsTextWidth() {
+        let text = Annotation(
+            kind: .text(at: CGPoint(x: 0.1, y: 0.2), string: "Hello", fontSize: 24, width: 0.5),
+            color: .black,
+            lineWidth: 4
+        )
+
+        XCTAssertEqual(
+            AnnotationEditor.target(
+                at: CGPoint(x: 0.6, y: 0.25),
+                annotation: text,
+                selectionSize: selectionSize
+            ),
+            .textWidth
+        )
+    }
+
+    func test_transformTextWidthPersistsNormalizedWidth() {
+        let text = Annotation(
+            kind: .text(at: CGPoint(x: 0.1, y: 0.2), string: "Hello", fontSize: 24, width: nil),
+            color: .black,
+            lineWidth: 4
+        )
+        let result = AnnotationEditor.transformed(
+            text,
+            target: .textWidth,
+            from: CGPoint(x: 0.2, y: 0.25),
+            to: CGPoint(x: 0.45, y: 0.25)
+        )
+
+        guard case let .text(_, _, _, width) = result.kind else {
+            return XCTFail("expected text")
+        }
+        XCTAssertEqual(width ?? -1, 0.35, accuracy: 0.0001)
     }
 }
