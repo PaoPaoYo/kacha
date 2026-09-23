@@ -55,6 +55,8 @@ struct AnnotationEditor {
             break
         case .blur:
             return nil
+        case .text:
+            break
         }
 
         return pathContains(annotation: annotation, point: point, selectionSize: selectionSize) ? .move : nil
@@ -88,6 +90,13 @@ struct AnnotationEditor {
             kind = .rect(resized(bounds: bounds, handle: handle, to: to))
         case let (.ellipse(bounds), .resize(handle)):
             kind = .ellipse(resized(bounds: bounds, handle: handle, to: to))
+        case let (.text(at, string, fontSize), .move):
+            // 单锚点：直接加 delta 后 clamp 到 0...1（多点 limiting 会因 x 越界连带缩 y）
+            kind = .text(
+                at: clamped(CGPoint(x: at.x + delta.x, y: at.y + delta.y)),
+                string: string,
+                fontSize: fontSize
+            )
         default:
             return annotation
         }
@@ -98,6 +107,28 @@ struct AnnotationEditor {
     static func updatingStyle(_ annotation: Annotation, color: RGBA, lineWidth: CGFloat) -> Annotation {
         guard isEditable(annotation) else { return annotation }
         return Annotation(id: annotation.id, kind: annotation.kind, color: color, lineWidth: lineWidth)
+    }
+
+    /// 替换文本内容（保留 id/颜色/字号/锚点）
+    static func updatingText(_ annotation: Annotation, string: String) -> Annotation {
+        guard case let .text(at, _, fontSize) = annotation.kind else { return annotation }
+        return Annotation(
+            id: annotation.id,
+            kind: .text(at: at, string: string, fontSize: fontSize),
+            color: annotation.color,
+            lineWidth: annotation.lineWidth
+        )
+    }
+
+    /// 替换字号（保留 id/颜色/文案/锚点）
+    static func updatingFontSize(_ annotation: Annotation, fontSize: CGFloat) -> Annotation {
+        guard case let .text(at, string, _) = annotation.kind else { return annotation }
+        return Annotation(
+            id: annotation.id,
+            kind: .text(at: at, string: string, fontSize: fontSize),
+            color: annotation.color,
+            lineWidth: annotation.lineWidth
+        )
     }
 
     static func removing(id: Annotation.ID, from annotations: [Annotation]) -> [Annotation] {
@@ -224,6 +255,10 @@ struct AnnotationEditor {
             in: selection,
             lineWidth: annotation.lineWidth
         )
+        // text 为排版包围盒 fill 命中（内部可点选/双击编辑）；其余形状 stroke 命中
+        if case .text = annotation.kind {
+            return path.contains(localPoint)
+        }
         let strokedPath = path.copy(
             strokingWithWidth: max(annotation.lineWidth, 8),
             lineCap: .round,

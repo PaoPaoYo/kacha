@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import AppKit
 
 /// 标注颜色（RGBA 分量，0-1）
 struct RGBA: Equatable {
@@ -17,10 +18,15 @@ struct RGBA: Equatable {
     static let palette: [RGBA] = [.red, .orange, .yellow, .green, .blue, .purple, .black, .white]
 }
 
-/// 标注工具；非 select 激活时接管选区内拖动为绘制
+/// 标注工具；非 select/text 激活时接管选区内拖动为绘制（text 为点选创建，不走拖拽绘制）
 enum AnnotationTool: Equatable {
-    case select, arrow, rect, ellipse, pen, blur
-    var takesOverDrag: Bool { self != .select }
+    case select, arrow, rect, ellipse, pen, blur, text
+    var takesOverDrag: Bool {
+        switch self {
+        case .select, .text: false
+        case .arrow, .rect, .ellipse, .pen, .blur: true
+        }
+    }
 }
 
 /// 粗细三档（pt）
@@ -43,8 +49,31 @@ enum AnnotationWidth: CaseIterable {
     }
 }
 
+/// 文本字号三档（绝对 pt，不随选区缩放）
+enum AnnotationFontSize: CaseIterable, Equatable {
+    case small, medium, large
+    var pt: CGFloat {
+        switch self {
+        case .small: 16
+        case .medium: 24
+        case .large: 36
+        }
+    }
+    /// 工具栏示意字号标签
+    var label: String {
+        switch self {
+        case .small: "16"
+        case .medium: "24"
+        case .large: "36"
+        }
+    }
+    static func nearest(_ pt: CGFloat) -> AnnotationFontSize {
+        allCases.min { abs($0.pt - pt) < abs($1.pt - pt) } ?? .medium
+    }
+}
+
 /// 一笔标注。几何为归一化坐标（0-1，相对选区）：选区移动/缩放时标注跟随；
-/// lineWidth 为绝对 pt，不随选区缩放。
+/// lineWidth 为绝对 pt，不随选区缩放。文本的 fontSize 亦为绝对 pt。
 struct Annotation: Identifiable, Equatable {
     enum Kind: Equatable {
         case arrow(start: CGPoint, end: CGPoint)  // 归一化
@@ -52,6 +81,7 @@ struct Annotation: Identifiable, Equatable {
         case ellipse(CGRect)                      // 归一化
         case pen(points: [CGPoint])               // 归一化
         case blur(points: [CGPoint], radius: CGFloat)  // 归一化（复用 pen 采样/去重/有效性；颜色不参与渲染；半径 pt 固化于每笔，撤销不受后续调节影响）
+        case text(at: CGPoint, string: String, fontSize: CGFloat)  // at 归一化左上锚点；fontSize 绝对 pt
     }
 
     let id: UUID
@@ -68,6 +98,87 @@ struct Annotation: Identifiable, Equatable {
         self.kind = kind
         self.color = color
         self.lineWidth = lineWidth
+    }
+}
+
+/// 文本排版（预览/导出/命中共用）：系统字体、按 maxWidth 自动折行
+enum AnnotationTextLayout {
+    /// 文本块最大宽度占选区宽度比例
+    static let maxWidthRatio: CGFloat = 0.9
+
+    static func maxWidth(forSelectionWidth width: CGFloat) -> CGFloat {
+        max(width * maxWidthRatio, 1)
+    }
+
+    static func font(ofSize size: CGFloat) -> NSFont {
+        NSFont.systemFont(ofSize: size)
+    }
+
+    static func attributedString(string: String, fontSize: CGFloat, color: RGBA) -> NSAttributedString {
+        NSAttributedString(string: string, attributes: [
+            .font: font(ofSize: fontSize),
+            .foregroundColor: NSColor(
+                red: color.r, green: color.g, blue: color.b, alpha: color.a
+            ),
+        ])
+    }
+
+    /// 排版包围盒（point，左上原点，相对文本锚点）
+    static func size(string: String, fontSize: CGFloat, maxWidth: CGFloat) -> CGSize {
+        guard !string.isEmpty, maxWidth > 0 else { return .zero }
+        let rect = (string as NSString).boundingRect(
+            with: CGSize(width: maxWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font(ofSize: fontSize)]
+        )
+        return CGSize(width: ceil(min(rect.width, maxWidth)), height: ceil(rect.height))
+    }
+
+    /// 文本在选区局部坐标中的包围矩形
+    static func localRect(
+        at normalized: CGPoint,
+        string: String,
+        fontSize: CGFloat,
+        selection: CGRect
+    ) -> CGRect {
+        let origin = AnnotationGeometry.localPoint(normalized, in: selection)
+        let maxW = maxWidth(forSelectionWidth: selection.width)
+        let size = size(string: string, fontSize: fontSize, maxWidth: maxW)
+        return CGRect(origin: origin, size: size)
+    }
+
+    /// CGContext 绘制文本块。调用方坐标系须为左上原点（选区局部 point 空间）；
+    /// 内部将 CoreText 翻转到左下原点后 CTFrameDraw。
+    static func draw(
+        _ context: CGContext,
+        string: String,
+        fontSize: CGFloat,
+        color: RGBA,
+        at origin: CGPoint,
+        maxWidth: CGFloat
+    ) {
+        guard !string.isEmpty, maxWidth > 0 else { return }
+        let attributed = attributedString(string: string, fontSize: fontSize, color: color)
+        let framesetter = CTFramesetterCreateWithAttributedString(attributed)
+        let measure = size(string: string, fontSize: fontSize, maxWidth: maxWidth)
+        guard measure.height > 0 else { return }
+        let path = CGPath(
+            rect: CGRect(x: 0, y: 0, width: maxWidth, height: measure.height),
+            transform: nil
+        )
+        let frame = CTFramesetterCreateFrame(
+            framesetter,
+            CFRange(location: 0, length: attributed.length),
+            path,
+            nil
+        )
+        context.saveGState()
+        // 左上原点 → 文本局部左下原点（CTFrame 原点在 path 左下）
+        context.translateBy(x: origin.x, y: origin.y + measure.height)
+        context.scaleBy(x: 1, y: -1)
+        context.textMatrix = .identity
+        CTFrameDraw(frame, context)
+        context.restoreGState()
     }
 }
 
@@ -100,6 +211,7 @@ enum AnnotationGeometry {
 
     /// 标注 CGPath（选区局部坐标）。箭头含线段与实心头三角两个子路径；
     /// rect/ellipse 以归一化矩形直接构建（stroke 中心线语义，由渲染层 stroke）。
+    /// text 为排版包围矩形（fill 命中语义，见 AnnotationEditor.pathContains）。
     static func path(for kind: Annotation.Kind, in selection: CGRect, lineWidth: CGFloat) -> CGPath {
         let path = CGMutablePath()
         switch kind {
@@ -141,11 +253,16 @@ enum AnnotationGeometry {
             for p in points.dropFirst() {
                 path.addLine(to: localPoint(p, in: selection))
             }
+        case let .text(at, string, fontSize):
+            path.addRect(AnnotationTextLayout.localRect(
+                at: at, string: string, fontSize: fontSize, selection: selection
+            ))
         }
         return path
     }
 
-    /// 松开时有效性：太小的标注丢弃（arrow/rect/ellipse 局部最长边 < 4pt；pen/blur < 2 点）
+    /// 松开时有效性：太小的标注丢弃（arrow/rect/ellipse 局部最长边 < 4pt；pen/blur < 2 点；
+    /// text 需 trim 后非空）
     static func isValid(_ kind: Annotation.Kind, selectionSize: CGSize) -> Bool {
         let minimum: CGFloat = 4
         switch kind {
@@ -159,6 +276,8 @@ enum AnnotationGeometry {
             return max(n.width * selectionSize.width, n.height * selectionSize.height) >= minimum
         case let .pen(points), let .blur(points, _):
             return points.count >= 2
+        case let .text(_, string, _):
+            return !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 }

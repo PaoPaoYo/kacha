@@ -50,6 +50,18 @@ enum AnnotationRenderer {
                 }
                 continue
             }
+            if case let .text(at, string, fontSize) = a.kind {
+                let origin = AnnotationGeometry.localPoint(at, in: selection)
+                AnnotationTextLayout.draw(
+                    ctx,
+                    string: string,
+                    fontSize: fontSize,
+                    color: a.color,
+                    at: origin,
+                    maxWidth: AnnotationTextLayout.maxWidth(forSelectionWidth: selection.width)
+                )
+                continue
+            }
             ctx.addPath(path)
             ctx.setLineWidth(a.lineWidth)
             ctx.setStrokeColor(CGColor(red: a.color.r, green: a.color.g, blue: a.color.b, alpha: a.color.a))

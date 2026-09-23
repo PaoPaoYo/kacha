@@ -54,6 +54,15 @@ struct SelectionView: View {
     @State private var annotationColor: RGBA = .red
     /// 当前标注粗细（三档；blur 工具不用此值，见 blurPenWidth）
     @State private var annotationWidth: AnnotationWidth = .medium
+    /// 文本字号三档（text 工具新建默认；选中文本时改对象上的 fontSize）
+    @State private var annotationFontSize: AnnotationFontSize = .medium
+    /// 文本编辑会话：creating = 点选新建；editing = 双击改已有文案
+    @State private var textEditSession: TextEditSession?
+    /// 文本编辑草稿（输入框绑定）
+    @State private var textEditDraft: String = ""
+    /// 双击判定：最近一次点中「文本」标注的 id 与时间
+    @State private var textTapCandidate: (id: Annotation.ID, at: Date)?
+    @FocusState private var textEditorFocused: Bool
     /// 模糊工具半径（pt，4...20）：固化进每笔标注（撤销后不受后续调节影响）；@AppStorage 跨会话记忆
     @AppStorage("blurRadius") private var blurRadius: Double = 8
     /// 模糊工具笔宽（pt，8...80）：打码范围大，独立于三档 annotationWidth；@AppStorage 跨会话记忆
@@ -84,8 +93,17 @@ struct SelectionView: View {
         selectedAnnotationID.flatMap { id in annotations.first { $0.id == id } }
     }
     private var displayedAnnotations: [Annotation] {
-        guard let annotationEditPreview else { return annotations }
-        return AnnotationEditor.replacing(annotationEditPreview, in: annotations)
+        var list: [Annotation]
+        if let annotationEditPreview {
+            list = AnnotationEditor.replacing(annotationEditPreview, in: annotations)
+        } else {
+            list = annotations
+        }
+        // 编辑中的文本不渲染已提交版本（由输入框接管，避免叠字）
+        if case let .editing(id) = textEditSession {
+            list = list.filter { $0.id != id }
+        }
+        return list
     }
 
     var body: some View {
@@ -131,6 +149,9 @@ struct SelectionView: View {
         .onChange(of: activeTool) { _, new in
             // 光标快照同步（引用实例，monitor 每次读到最新值）
             cursorState.tool = new
+            if textEditSession != nil {
+                commitTextEdit()
+            }
             if new != .select {
                 clearAnnotationSelection()
             }
@@ -424,17 +445,20 @@ struct SelectionView: View {
 
     private func confirm() {
         guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection) else { return }
+        if textEditSession != nil { commitTextEdit() }
         onConfirm(selection, CGFloat(cornerRadius), annotations)
     }
 
     private func save() {
         guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection) else { return }
+        if textEditSession != nil { commitTextEdit() }
         onSave(selection, CGFloat(cornerRadius), annotations)
     }
 
     /// 钉图（守卫同 confirm/save）
     private func pin() {
         guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection) else { return }
+        if textEditSession != nil { commitTextEdit() }
         onPin(selection, CGFloat(cornerRadius), annotations)
     }
 
@@ -474,6 +498,11 @@ struct SelectionView: View {
         if phase == .adjusting {
             adjustmentLayers(in: geo, sel: sel)
 
+            // 文本输入浮层（透明 TextField；不进导出）
+            if textEditSession != nil {
+                textEditorOverlay(sel: sel)
+            }
+
             // 选区右下角单行工具栏（紧贴选区，拖动玻璃块上非按钮的像素即可挪开）
             captureToolbar(in: geo, sel: sel)
         }
@@ -499,6 +528,20 @@ struct SelectionView: View {
                                                                   lineCap: .round, lineJoin: .round)))
                         ctx.draw(Image(decorative: blurred, scale: 1), in: sel)
                     }
+                    continue
+                }
+                if case let .text(at, string, fontSize) = a.kind {
+                    // 预览用 SwiftUI Text（与导出同字号/同 maxWidth 折行语义）；不描边包围盒
+                    let local = AnnotationTextLayout.localRect(
+                        at: at, string: string, fontSize: fontSize, selection: sel
+                    )
+                    let textColor = Color(red: a.color.r, green: a.color.g, blue: a.color.b, opacity: a.color.a)
+                    let resolved = context.resolve(
+                        Text(string)
+                            .font(.system(size: fontSize))
+                            .foregroundStyle(textColor)
+                    )
+                    ctx.draw(resolved, at: CGPoint(x: local.minX, y: local.minY), anchor: .topLeading)
                     continue
                 }
                 let color = Color(red: a.color.r, green: a.color.g, blue: a.color.b, opacity: a.color.a)
@@ -552,6 +595,14 @@ struct SelectionView: View {
                         .frame(width: bounds.width * sel.width, height: bounds.height * sel.height)
                         .position(x: bounds.midX * sel.width, y: bounds.midY * sel.height)
                 }
+            case let .text(at, string, fontSize):
+                let local = AnnotationTextLayout.localRect(
+                    at: at, string: string, fontSize: fontSize, selection: sel
+                )
+                Rectangle()
+                    .stroke(stroke, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    .frame(width: local.width, height: local.height)
+                    .position(x: local.midX, y: local.midY)
             case .blur:
                 EmptyView()
             }
@@ -631,6 +682,23 @@ struct SelectionView: View {
             annotationEditingLayer(in: geo, sel: sel)
         }
 
+        // 文本工具：点选创建透明输入框（不走拖拽绘制）
+        if activeTool == .text {
+            Color.clear
+                .frame(width: sel.width, height: sel.height)
+                .contentShape(Rectangle())
+                .position(x: sel.midX, y: sel.midY)
+                .onTapGesture { location in
+                    if textEditSession != nil {
+                        commitTextEdit()
+                    }
+                    beginTextEdit(
+                        .creating(at: AnnotationGeometry.normalizedPoint(location, in: sel)),
+                        selection: sel
+                    )
+                }
+        }
+
         // 标注绘制层：工具激活时渲染在 move 层/手柄之上——后渲染覆盖命中，
         // move/边/角手势让位（双击确认随之失效，回车/按钮/右键仍可用）；
         // 「选择」工具时本层不存在，恢复 move/手柄/双击现状。
@@ -679,6 +747,9 @@ struct SelectionView: View {
             return
         }
         // 空白点击/拖拽退出标注上下文；仅提交 selection 状态，截图调整不写标注几何历史。
+        if textEditSession != nil {
+            commitTextEdit()
+        }
         clearAnnotationSelection()
         if adjustKind == nil {
             beginAdjust(selectionHandle(at: start, in: selection) ?? .move, at: start)
@@ -715,9 +786,24 @@ struct SelectionView: View {
         }
         if let id = AnnotationEditor.hitTest(annotations: annotations, point: normalizedPoint, selectionSize: selection.size),
            let annotation = annotations.first(where: { $0.id == id }) {
+            // 双击文本 → 进入重编辑；否则选中并可拖动
+            if case .text = annotation.kind {
+                let now = Date()
+                if let candidate = textTapCandidate,
+                   candidate.id == annotation.id,
+                   now.timeIntervalSince(candidate.at) < 0.35 {
+                    textTapCandidate = nil
+                    beginTextEdit(.editing(annotation.id), selection: selection)
+                    return true
+                }
+                textTapCandidate = (annotation.id, now)
+            } else {
+                textTapCandidate = nil
+            }
             beginAnnotationEdit(.move, at: normalizedPoint, annotation: annotation)
             return true
         }
+        textTapCandidate = nil
         return false
     }
 
@@ -775,6 +861,139 @@ struct SelectionView: View {
         cancelAnnotationEdit()
     }
 
+    // MARK: 文本编辑
+
+    /// 打开文本编辑（新建或双击改已有）
+    private func beginTextEdit(_ session: TextEditSession, selection: CGRect) {
+        cancelAnnotationEdit()
+        clearAnnotationSelection()
+        textEditSession = session
+        switch session {
+        case .creating:
+            textEditDraft = ""
+        case let .editing(id):
+            if let annotation = annotations.first(where: { $0.id == id }),
+               case let .text(_, string, _) = annotation.kind {
+                textEditDraft = string
+                commitAnnotationState(annotations: annotations, selectedAnnotationID: id)
+            } else {
+                textEditSession = nil
+                return
+            }
+        }
+        DispatchQueue.main.async {
+            textEditorFocused = true
+        }
+        _ = selection
+    }
+
+    /// 提交当前文本编辑：有内容则入库/替换；空则丢弃（editing 空 = 删除该条）
+    private func commitTextEdit() {
+        guard let session = textEditSession else { return }
+        textEditSession = nil
+        textEditorFocused = false
+        let trimmed = textEditDraft
+        textEditDraft = ""
+        switch session {
+        case let .creating(at):
+            let kind = Annotation.Kind.text(
+                at: at,
+                string: trimmed,
+                fontSize: annotationFontSize.pt
+            )
+            guard AnnotationGeometry.isValid(kind, selectionSize: selection.size) else { return }
+            let annotation = Annotation(kind: kind, color: annotationColor, lineWidth: annotationWidth.pt)
+            commitAnnotationState(annotations: annotations + [annotation], selectedAnnotationID: annotation.id)
+        case let .editing(id):
+            guard let existing = annotations.first(where: { $0.id == id }) else { return }
+            if trimmed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                commitAnnotationState(
+                    annotations: AnnotationEditor.removing(id: id, from: annotations),
+                    selectedAnnotationID: nil
+                )
+            } else {
+                let updated = AnnotationEditor.updatingText(existing, string: trimmed)
+                commitAnnotationState(
+                    annotations: AnnotationEditor.replacing(updated, in: annotations),
+                    selectedAnnotationID: id
+                )
+            }
+        }
+    }
+
+    private func cancelTextEdit() {
+        textEditSession = nil
+        textEditDraft = ""
+        textEditorFocused = false
+    }
+
+    private func updateAnnotationFontSize(_ size: AnnotationFontSize) {
+        annotationFontSize = size
+        guard let selectedAnnotation, case .text = selectedAnnotation.kind else { return }
+        let updated = AnnotationEditor.updatingFontSize(selectedAnnotation, fontSize: size.pt)
+        commitAnnotationState(
+            annotations: AnnotationEditor.replacing(updated, in: annotations),
+            selectedAnnotationID: updated.id
+        )
+    }
+
+    /// 透明多行文本输入框（仅预览层）
+    @ViewBuilder
+    private func textEditorOverlay(sel: CGRect) -> some View {
+        let session = textEditSession
+        let anchor: CGPoint = {
+            switch session {
+            case let .creating(at):
+                return at
+            case let .editing(id):
+                if let a = annotations.first(where: { $0.id == id }),
+                   case let .text(at, _, _) = a.kind { return at }
+                return .zero
+            case nil:
+                return .zero
+            }
+        }()
+        let fontSize: CGFloat = {
+            if case let .editing(id) = session,
+               let a = annotations.first(where: { $0.id == id }),
+               case let .text(_, _, size) = a.kind { return size }
+            return annotationFontSize.pt
+        }()
+        let origin = AnnotationGeometry.localPoint(anchor, in: sel)
+        let maxWidth = AnnotationTextLayout.maxWidth(forSelectionWidth: sel.width)
+
+        TextEditor(text: $textEditDraft)
+            .font(.system(size: fontSize))
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
+            .overlay(alignment: .topLeading) {
+                if textEditDraft.isEmpty {
+                    Text("输入文字…")
+                        .font(.system(size: fontSize))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+            }
+            .padding(4)
+            .frame(width: maxWidth, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.35))
+            .overlay {
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color(nsColor: .controlAccentColor), lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .position(x: origin.x + maxWidth / 2, y: origin.y + 24)
+            .focused($textEditorFocused)
+            .onExitCommand { cancelTextEdit() }
+            .onKeyPress(.return) {
+                commitTextEdit()
+                return .handled
+            }
+    }
+
     private func updateAnnotationColor(_ color: RGBA) {
         guard let selectedAnnotation else {
             annotationColor = color
@@ -823,6 +1042,7 @@ struct SelectionView: View {
         CaptureToolbar(tool: $activeTool,
                        color: $annotationColor,
                        lineWidth: $annotationWidth,
+                       fontSize: $annotationFontSize,
                        cornerRadius: $cornerRadius,
                        blurRadius: $blurRadius,
                        blurPenWidth: $blurPenWidth,
@@ -838,6 +1058,7 @@ struct SelectionView: View {
                        selectedAnnotation: selectedAnnotation,
                        onColorChange: updateAnnotationColor,
                        onLineWidthChange: updateAnnotationWidth,
+                       onFontSizeChange: updateAnnotationFontSize,
                        onUndo: undoLastAnnotation,
                        onDelete: removeSelectedAnnotation,
                        onSave: save,
@@ -863,8 +1084,8 @@ struct SelectionView: View {
         let color = annotationColor
         let width = annotationWidth.pt
         switch activeTool {
-        case .select:
-            break   // 不接管拖动（绘制层此时不存在）
+        case .select, .text:
+            break   // select 不接管拖动；text 点选创建编辑框，不走拖拽绘制
         case .arrow:
             drawingAnnotation = Annotation(
                 kind: .arrow(start: AnnotationGeometry.normalizedPoint(start, in: sel),
@@ -1356,6 +1577,12 @@ private struct ToolbarIconButton: View {
     }
 }
 
+/// 文本编辑会话（创建 / 双击重编辑）
+enum TextEditSession: Equatable {
+    case creating(at: CGPoint)
+    case editing(Annotation.ID)
+}
+
 /// 弹出面板标识（锚点 preference 的 key；互斥开关按其寻址）：style = 色+宽合并样式面板
 /// （pen 系专用钮触发）、width = blur 双滑块面板、radius = 圆角
 private enum PanelID: String, CaseIterable {
@@ -1452,6 +1679,7 @@ private struct CaptureToolbar: View {
     @Binding var tool: AnnotationTool
     @Binding var color: RGBA
     @Binding var lineWidth: AnnotationWidth
+    @Binding var fontSize: AnnotationFontSize
     @Binding var cornerRadius: Double
     /// 模糊工具专属双滑块值（半径 4...20 / 笔宽 8...80），仅 blur 面板消费
     @Binding var blurRadius: Double
@@ -1475,6 +1703,7 @@ private struct CaptureToolbar: View {
     let selectedAnnotation: Annotation?
     let onColorChange: (RGBA) -> Void
     let onLineWidthChange: (AnnotationWidth) -> Void
+    let onFontSizeChange: (AnnotationFontSize) -> Void
     let onUndo: () -> Void
     let onDelete: () -> Void
     let onSave: () -> Void
@@ -1493,6 +1722,18 @@ private struct CaptureToolbar: View {
     private var displayedLineWidth: AnnotationWidth {
         guard let selectedAnnotation else { return lineWidth }
         return AnnotationWidth.allCases.first { $0.pt == selectedAnnotation.lineWidth } ?? lineWidth
+    }
+    /// 样式面板下行：text 工具/选中文本显示字号档，否则显示线宽档
+    private var isTextStyleContext: Bool {
+        if tool == .text { return true }
+        if case .text = selectedAnnotation?.kind { return true }
+        return false
+    }
+    private var displayedFontSize: AnnotationFontSize {
+        if let selectedAnnotation, case let .text(_, _, size) = selectedAnnotation.kind {
+            return AnnotationFontSize.nearest(size)
+        }
+        return fontSize
     }
 
     var body: some View {
@@ -1572,6 +1813,7 @@ private struct CaptureToolbar: View {
                 ToolbarIconButton(symbol: "rectangle", selected: tool == .rect, accessibilityLabel: "矩形") { tool = .rect }
                 ToolbarIconButton(symbol: "circle", selected: tool == .ellipse, accessibilityLabel: "椭圆") { tool = .ellipse }
                 ToolbarIconButton(symbol: "scribble", selected: tool == .pen, accessibilityLabel: "画笔") { tool = .pen }
+                ToolbarIconButton(symbol: "textformat", selected: tool == .text, accessibilityLabel: "文本") { tool = .text }
                 ToolbarIconButton(symbol: "drop.fill", selected: tool == .blur, accessibilityLabel: "模糊") { tool = .blur }
             }
             // 样式/宽度段左分隔符（**恒定**，在槽外）：样式槽 select 态收起时仍保证工具组
@@ -1762,9 +2004,17 @@ private struct CaptureToolbar: View {
                                     colorSwatch(c) { }
                                 }
                             }
-                            HStack(spacing: 6) {
-                                ForEach(AnnotationWidth.allCases, id: \.pt) { w in
-                                    widthButton(w) { }
+                            if isTextStyleContext {
+                                HStack(spacing: 6) {
+                                    ForEach(AnnotationFontSize.allCases, id: \.pt) { s in
+                                        fontSizeButton(s)
+                                    }
+                                }
+                            } else {
+                                HStack(spacing: 6) {
+                                    ForEach(AnnotationWidth.allCases, id: \.pt) { w in
+                                        widthButton(w) { }
+                                    }
                                 }
                             }
                         }
@@ -1939,6 +2189,25 @@ private struct CaptureToolbar: View {
                     }
                 }
                 .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 字号档钮（文本上下文）：显示 16/24/36 标签，当前档 accent 描边
+    private func fontSizeButton(_ size: AnnotationFontSize) -> some View {
+        Button {
+            onFontSizeChange(size)
+        } label: {
+            Text(size.label)
+                .font(.system(size: 11, weight: .medium).monospacedDigit())
+                .frame(width: 28, height: 24)
+                .contentShape(Rectangle())
+                .overlay {
+                    if size == displayedFontSize {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
+                    }
+                }
         }
         .buttonStyle(.plain)
     }
