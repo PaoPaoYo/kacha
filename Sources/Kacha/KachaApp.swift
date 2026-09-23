@@ -4,7 +4,8 @@ import ServiceManagement
 import SwiftUI
 
 enum SettingsLaunchPolicy {
-    static let shouldOpenSettingsOnLaunch = true
+    static let shouldOpenSettingsOnLaunch = false
+    static let shouldShowLaunchHUDOnLaunch = true
 
     static func shouldOpenSettingsOnReopen(showMenuBarIcon: Bool) -> Bool {
         !showMenuBarIcon
@@ -50,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published private(set) var hotKeyErrorMessage: String?
     private var hotKeyRegistration: HotKeyRegistrationCoordinator?
     private lazy var settingsWindowController = SettingsWindowController(appDelegate: self)
+    private let launchHUDController = LaunchHUDController()
 
     override init() {
         UserDefaults.standard.register(defaults: ["showMenuBarIcon": true])
@@ -64,6 +66,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         if SettingsLaunchPolicy.shouldOpenSettingsOnLaunch {
             openSettings()
+        } else if SettingsLaunchPolicy.shouldShowLaunchHUDOnLaunch {
+            launchHUDController.show(
+                hotKey: hotKeyPreferences,
+                hotKeyErrorMessage: hotKeyErrorMessage
+            )
         }
     }
 

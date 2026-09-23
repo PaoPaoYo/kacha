@@ -3,12 +3,12 @@ import XCTest
 
 @MainActor
 final class SettingsLaunchPolicyTests: XCTestCase {
-    func test_coldLaunchAlwaysOpensSettings() {
-        XCTAssertTrue(SettingsLaunchPolicy.shouldOpenSettingsOnLaunch)
+    func test_coldLaunchDoesNotOpenSettings() {
+        XCTAssertFalse(SettingsLaunchPolicy.shouldOpenSettingsOnLaunch)
     }
 
-    func test_coldLaunchUsesDirectSettingsPresentation() {
-        XCTAssertTrue(SettingsLaunchPolicy.shouldOpenSettingsOnLaunch)
+    func test_coldLaunchShowsLaunchHUD() {
+        XCTAssertTrue(SettingsLaunchPolicy.shouldShowLaunchHUDOnLaunch)
     }
 
     func test_reopenWithHiddenMenuBarIconOpensSettings() {
