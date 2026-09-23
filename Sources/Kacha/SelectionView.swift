@@ -60,6 +60,7 @@ struct SelectionView: View {
     @State private var textEditSession: TextEditSession?
     /// 文本编辑草稿（输入框绑定）
     @State private var textEditDraft: String = ""
+    @State private var textTapSequence = TextAnnotationTapSequence()
     /// 模糊工具半径（pt，4...20）：固化进每笔标注（撤销后不受后续调节影响）；@AppStorage 跨会话记忆
     @AppStorage("blurRadius") private var blurRadius: Double = 8
     /// 模糊工具笔宽（pt，8...80）：打码范围大，独立于三档 annotationWidth；@AppStorage 跨会话记忆
@@ -702,6 +703,10 @@ struct SelectionView: View {
                     }
                     .onEnded { value in
                         if activeAnnotationEdit != nil {
+                            if hypot(value.location.x - value.startLocation.x,
+                                     value.location.y - value.startLocation.y) > 3 {
+                                textTapSequence.reset()
+                            }
                             commitAnnotationEdit()
                             return
                         }
@@ -783,14 +788,24 @@ struct SelectionView: View {
         if let selectedAnnotation,
            let target = AnnotationEditor.target(at: normalizedPoint, annotation: selectedAnnotation, selectionSize: selection.size),
            target != .move {
+            textTapSequence.reset()
             beginAnnotationEdit(target, at: normalizedPoint, annotation: selectedAnnotation)
             return true
         }
         if let id = AnnotationEditor.hitTest(annotations: annotations, point: normalizedPoint, selectionSize: selection.size),
            let annotation = annotations.first(where: { $0.id == id }) {
+            if case .text = annotation.kind {
+                if textTapSequence.press(id: id, at: Date()) {
+                    beginTextEdit(.editing(id), selection: selection)
+                    return true
+                }
+            } else {
+                textTapSequence.reset()
+            }
             beginAnnotationEdit(.move, at: normalizedPoint, annotation: annotation)
             return true
         }
+        textTapSequence.reset()
         return false
     }
 
@@ -1615,6 +1630,26 @@ enum AnnotationDoubleTapAction: Equatable {
     case none
     case confirmCapture
     case editText(Annotation.ID)
+}
+
+struct TextAnnotationTapSequence {
+    private var candidate: (id: Annotation.ID, at: Date)?
+
+    mutating func press(id: Annotation.ID, at date: Date) -> Bool {
+        if let candidate,
+           candidate.id == id,
+           date.timeIntervalSince(candidate.at) >= 0,
+           date.timeIntervalSince(candidate.at) < 0.35 {
+            self.candidate = nil
+            return true
+        }
+        candidate = (id, date)
+        return false
+    }
+
+    mutating func reset() {
+        candidate = nil
+    }
 }
 
 /// 文本编辑会话（创建 / 双击重编辑）

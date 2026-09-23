@@ -26,6 +26,31 @@ final class AnnotationToolSelectionTests: XCTestCase {
         XCTAssertEqual(SelectionView.blankInteraction(for: .ellipse), .draw(.ellipse))
     }
 
+    func test_textToolSecondPressOnSameTextEntersEditing() {
+        let text = Annotation(
+            kind: .text(at: CGPoint(x: 0.2, y: 0.2), string: "Text", fontSize: 24),
+            color: .black,
+            lineWidth: 4
+        )
+        var taps = TextAnnotationTapSequence()
+        let first = taps.press(id: text.id, at: Date(timeIntervalSince1970: 100))
+        let second = taps.press(id: text.id, at: Date(timeIntervalSince1970: 100.2))
+
+        XCTAssertFalse(first)
+        XCTAssertTrue(second)
+    }
+
+    func test_textPressesOnDifferentTargetsOrOutsideDoubleClickIntervalDoNotEdit() {
+        let firstID = UUID()
+        let otherID = UUID()
+        var taps = TextAnnotationTapSequence()
+
+        XCTAssertFalse(taps.press(id: firstID, at: Date(timeIntervalSince1970: 100)))
+        XCTAssertFalse(taps.press(id: otherID, at: Date(timeIntervalSince1970: 100.1)))
+        XCTAssertFalse(taps.press(id: firstID, at: Date(timeIntervalSince1970: 101)))
+        XCTAssertTrue(taps.press(id: firstID, at: Date(timeIntervalSince1970: 101.2)))
+    }
+
     func test_doubleTapTextEditsEvenWithAnotherToolActive() {
         let text = Annotation(
             kind: .text(at: CGPoint(x: 0.2, y: 0.2), string: "Text", fontSize: 24),
