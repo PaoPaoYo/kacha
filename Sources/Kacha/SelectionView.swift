@@ -17,7 +17,7 @@ struct SelectionView: View {
     let onSave: (CGRect, CGFloat, [Annotation]) -> Void
     /// 钉图时回调：屏幕局部 point 选区（有效性已过滤）+ 圆角半径（point，0 = 直角）+ 已完成标注
     let onPin: (CGRect, CGFloat, [Annotation]) -> Void
-    let onScroll: (CGRect) -> Void
+    let onScroll: (CGRect, CGPoint) -> Void
     let onCancel: () -> Void
 
     private enum Phase {
@@ -540,7 +540,8 @@ struct SelectionView: View {
     private func startScrollingCapture() {
         guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection),
               annotations.isEmpty, textEditSession == nil else { return }
-        onScroll(selection)
+        let group = Self.toolbarRowLayout(sel: selection, bounds: frame.screenPointSize)
+        onScroll(selection, toolbarPosition ?? CGPoint(x: group.right, y: group.bottom))
     }
 
     /// 撤销一个已提交标注状态；无历史时不执行任何操作。
@@ -1658,7 +1659,7 @@ private struct SizeBadge: View {
 /// 视觉重构后整行共享一个液态玻璃胶囊，钮本身不带底色（前景 .primary）；
 /// 仅左侧六个工具钮有选中态：20×20 accent 实心内圆 + 白色图标（旧 accent 描边态已删）；
 /// 保存/复制/撤销等动作钮恒 false（纯图标）
-private struct ToolbarIconButton: View {
+struct ToolbarIconButton: View {
     let symbol: String
     let selected: Bool
     /// 无障碍标签（图标钮可读性，全部钮显式传入中文名）
@@ -1682,6 +1683,20 @@ private struct ToolbarIconButton: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
+    }
+}
+
+struct CaptureActionButtons: View {
+    let onSave: () -> Void
+    let onCopy: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ToolbarIconButton(symbol: "square.and.arrow.down", selected: false,
+                              accessibilityLabel: "保存", action: onSave)
+            ToolbarIconButton(symbol: "doc.on.doc", selected: false,
+                              accessibilityLabel: "复制", action: onCopy)
+        }
     }
 }
 
@@ -2038,14 +2053,7 @@ private struct CaptureToolbar: View {
                               selected: false,
                               accessibilityLabel: "钉图",
                               action: onPin)
-            ToolbarIconButton(symbol: "square.and.arrow.down",
-                              selected: false,
-                              accessibilityLabel: "保存",
-                              action: onSave)
-            ToolbarIconButton(symbol: "doc.on.doc",
-                              selected: false,
-                              accessibilityLabel: "复制",
-                              action: onCopy)
+            CaptureActionButtons(onSave: onSave, onCopy: onCopy)
         }
     }
 

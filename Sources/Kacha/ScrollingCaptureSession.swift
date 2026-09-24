@@ -3,12 +3,17 @@ import CoreMedia
 import ScreenCaptureKit
 import SwiftUI
 
+enum ScrollingToolbarGeometry {
+    static func localFrame(anchor: CGPoint) -> CGRect {
+        CGRect(x: anchor.x - 76, y: anchor.y - 34, width: 76, height: 34)
+    }
+}
+
 @MainActor
 final class ScrollingCaptureSession: ObservableObject {
     @Published private(set) var image: CGImage?
     @Published private(set) var status = "准备采集…"
     @Published private(set) var revision = 0
-    @Published private(set) var isCompact = false
 
     private var stitcher = ScrollingStitcher()
     private var stream: SCStream?
@@ -18,15 +23,18 @@ final class ScrollingCaptureSession: ObservableObject {
     private(set) var isFinished = false
     private let screen: NSScreen
     private let selection: CGRect
+    private let toolbarAnchor: CGPoint
     private let onDismiss: () -> Void
     private let onOutput: (CGImage, CaptureAction) -> Void
     private var panel: NSPanel?
+    private var toolbarPanel: NSPanel?
     private var borderPanel: NSPanel?
 
-    init(screen: NSScreen, selection: CGRect, onDismiss: @escaping () -> Void,
+    init(screen: NSScreen, selection: CGRect, toolbarAnchor: CGPoint, onDismiss: @escaping () -> Void,
          onOutput: @escaping (CGImage, CaptureAction) -> Void) {
         self.screen = screen
         self.selection = selection
+        self.toolbarAnchor = toolbarAnchor
         self.onDismiss = onDismiss
         self.onOutput = onOutput
     }
@@ -61,6 +69,8 @@ final class ScrollingCaptureSession: ObservableObject {
         } catch {
             panel?.close()
             panel = nil
+            toolbarPanel?.close()
+            toolbarPanel = nil
             borderPanel?.close()
             borderPanel = nil
             self.stream = nil
@@ -97,14 +107,6 @@ final class ScrollingCaptureSession: ObservableObject {
         processing = false
     }
 
-    func togglePreview() {
-        isCompact.toggle()
-        guard let panel else { return }
-        let top = panel.frame.maxY
-        let height: CGFloat = isCompact ? 124 : 470
-        panel.setFrame(CGRect(x: panel.frame.minX, y: top - height, width: 340, height: height), display: true)
-    }
-
     func finish(_ action: CaptureAction) {
         guard !isFinished, let image else { return }
         isFinished = true
@@ -126,6 +128,8 @@ final class ScrollingCaptureSession: ObservableObject {
         output = nil
         panel?.close()
         panel = nil
+        toolbarPanel?.close()
+        toolbarPanel = nil
         borderPanel?.close()
         borderPanel = nil
         onDismiss()
@@ -148,12 +152,27 @@ final class ScrollingCaptureSession: ObservableObject {
         border.orderFrontRegardless()
         borderPanel = border
 
-        let preview = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 340, height: 470),
-                              styleMask: [.titled, .nonactivatingPanel],
+        let toolbarRegion = PinWindowController.appkitFrame(
+            fromLocal: ScrollingToolbarGeometry.localFrame(anchor: toolbarAnchor), on: screen)
+        let toolbar = NSPanel(contentRect: toolbarRegion, styleMask: [.borderless, .nonactivatingPanel],
                               backing: .buffered, defer: false)
-        preview.title = "长截图预览"
+        toolbar.isOpaque = false
+        toolbar.backgroundColor = .clear
+        toolbar.level = .floating
+        toolbar.hidesOnDeactivate = false
+        toolbar.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        toolbar.contentView = NSHostingView(rootView: ScrollingCaptureToolbar(session: self))
+        toolbar.orderFrontRegardless()
+        toolbarPanel = toolbar
+
+        let preview = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 340, height: 420),
+                              styleMask: [.borderless, .nonactivatingPanel],
+                              backing: .buffered, defer: false)
+        preview.isOpaque = false
+        preview.backgroundColor = .clear
+        preview.hasShadow = true
+        preview.isMovableByWindowBackground = true
         preview.level = .floating
-        preview.isFloatingPanel = true
         preview.hidesOnDeactivate = false
         preview.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         preview.contentView = NSHostingView(rootView: ScrollingPreviewView(session: self))
@@ -166,7 +185,7 @@ final class ScrollingCaptureSession: ObservableObject {
         } else {
             x = max(visible.minX, min(visible.maxX - 340, region.minX))
         }
-        preview.setFrameOrigin(CGPoint(x: x, y: max(visible.minY, min(visible.maxY - 470, region.midY - 235))))
+        preview.setFrameOrigin(CGPoint(x: x, y: max(visible.minY, min(visible.maxY - 420, region.midY - 210))))
         preview.orderFrontRegardless()
         panel = preview
     }
@@ -200,52 +219,44 @@ private final class ScrollingStreamOutput: NSObject, SCStreamOutput, SCStreamDel
     }
 }
 
+private struct ScrollingCaptureToolbar: View {
+    @ObservedObject var session: ScrollingCaptureSession
+
+    var body: some View {
+        CaptureActionButtons(onSave: { session.finish(.save) },
+                             onCopy: { session.finish(.copy) })
+            .disabled(session.image == nil)
+            .frame(height: 24)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .glassEffect(in: Capsule())
+            .frame(width: 76, height: 34)
+    }
+}
+
 private struct ScrollingPreviewView: View {
     @ObservedObject var session: ScrollingCaptureSession
 
     var body: some View {
-        VStack(spacing: 10) {
-            HStack {
-                Text(session.status)
-                    .font(.caption)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(2)
-                Button {
-                    session.togglePreview()
-                } label: {
-                    Image(systemName: session.isCompact ? "chevron.down" : "chevron.up")
-                }
-                .buttonStyle(.plain)
-                .help(session.isCompact ? "展开预览" : "收起预览")
-            }
-            if !session.isCompact {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    if let image = session.image {
-                        Image(decorative: image, scale: 1)
-                            .resizable()
-                            .frame(width: 300, height: 300 * CGFloat(image.height) / CGFloat(image.width))
-                            .id(session.revision)
-                    } else {
-                        ProgressView("等待首帧")
-                            .frame(maxWidth: .infinity, minHeight: 320)
-                    }
-                }
-                .onChange(of: session.revision) { _, new in
-                    withAnimation { proxy.scrollTo(new, anchor: .bottom) }
+        ScrollViewReader { proxy in
+            ScrollView {
+                if let image = session.image {
+                    Image(decorative: image, scale: 1)
+                        .resizable()
+                        .frame(width: 324, height: 324 * CGFloat(image.height) / CGFloat(image.width))
+                        .id(session.revision)
+                } else {
+                    ProgressView()
+                        .frame(width: 324, height: 404)
                 }
             }
-            }
-            HStack {
-                Button("取消") { session.cancel() }
-                Spacer()
-                Button("保存") { session.finish(.save) }
-                    .disabled(session.image == nil)
-                Button("复制") { session.finish(.copy) }
-                    .disabled(session.image == nil)
+            .contentMargins(8)
+            .onChange(of: session.revision) { _, new in
+                proxy.scrollTo(new, anchor: .bottom)
             }
         }
-        .padding(12)
-        .frame(width: 340, height: session.isCompact ? 94 : 440)
+        .frame(width: 340, height: 420)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

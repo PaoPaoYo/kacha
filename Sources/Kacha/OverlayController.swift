@@ -23,7 +23,7 @@ final class OverlayController {
     /// 显示全部屏幕的覆盖窗；用户完成框选后回调裁剪好的图像、所选动作与选区 AppKit 全局 frame
     /// （屏局部 point 选区经 `PinWindowController.appkitFrame(fromLocal:on:)` 换算，钉图原位开窗用）。
     /// windowsByScreen：各屏窗口矩形（本屏局部坐标、front-to-back），透传给各屏 SelectionView
-    func show(frames: [ScreenFrame], windowsByScreen: [CGDirectDisplayID: [CGRect]], onCapture: @escaping (CGImage, CaptureAction, CGRect) -> Void, onScroll: @escaping (NSScreen, CGRect) -> Void, onCancel: @escaping () -> Void) {
+    func show(frames: [ScreenFrame], windowsByScreen: [CGDirectDisplayID: [CGRect]], onCapture: @escaping (CGImage, CaptureAction, CGRect) -> Void, onScroll: @escaping (NSScreen, CGRect, CGPoint) -> Void, onCancel: @escaping () -> Void) {
         dismissAll()
         NSApp.activate(ignoringOtherApps: true)
 
@@ -47,9 +47,9 @@ final class OverlayController {
                 self?.handleConfirm(frame: frame, pointRect: pointRect, cornerRadius: cornerRadius, annotations: annotations, action: .save, onCapture: onCapture)
             } onPin: { [weak self] pointRect, cornerRadius, annotations in
                 self?.handleConfirm(frame: frame, pointRect: pointRect, cornerRadius: cornerRadius, annotations: annotations, action: .pin, onCapture: onCapture)
-            } onScroll: { [weak self] pointRect in
+            } onScroll: { [weak self] pointRect, toolbarAnchor in
                 self?.dismissAll()
-                onScroll(frame.screen, pointRect)
+                onScroll(frame.screen, pointRect, toolbarAnchor)
             } onCancel: { [weak self] in
                 self?.dismissAll()
                 onCancel()

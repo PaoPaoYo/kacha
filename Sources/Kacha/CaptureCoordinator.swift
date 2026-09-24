@@ -31,8 +31,8 @@ final class CaptureCoordinator {
                     PinWindowController.shared.pin(image, frame: globalFrame)
                     NSSound(named: NSSound.Name("Tink"))?.play()
                 }
-            }, onScroll: { screen, selection in
-                self.beginScrolling(screen: screen, selection: selection, returningTo: frontmostApp)
+            }, onScroll: { screen, selection, toolbarAnchor in
+                self.beginScrolling(screen: screen, selection: selection, toolbarAnchor: toolbarAnchor, returningTo: frontmostApp)
             }, onCancel: {})
         } catch CaptureError.noPermission {
             presentPermissionGuide()
@@ -41,8 +41,8 @@ final class CaptureCoordinator {
         }
     }
 
-    private func beginScrolling(screen: NSScreen, selection: CGRect, returningTo app: NSRunningApplication?) {
-        let session = ScrollingCaptureSession(screen: screen, selection: selection, onDismiss: { [weak self] in
+    private func beginScrolling(screen: NSScreen, selection: CGRect, toolbarAnchor: CGPoint, returningTo app: NSRunningApplication?) {
+        let session = ScrollingCaptureSession(screen: screen, selection: selection, toolbarAnchor: toolbarAnchor, onDismiss: { [weak self] in
             self?.scrollingSession = nil
         }, onOutput: { [weak self] image, action in
             switch action {
