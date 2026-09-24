@@ -94,6 +94,35 @@ struct SelectionView: View {
         return tool == .text ? .createText : .draw(tool)
     }
 
+    static func documentAfterSelectingAnnotation(
+        id: Annotation.ID,
+        session: TextEditSession,
+        draft: String,
+        annotations: [Annotation],
+        color: RGBA,
+        fontSize: CGFloat,
+        lineWidth: CGFloat,
+        selectionSize: CGSize
+    ) -> AnnotationDocumentState {
+        var result = annotations
+        if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            switch session {
+            case let .creating(at):
+                let kind = Annotation.Kind.text(at: at, string: draft, fontSize: fontSize)
+                if AnnotationGeometry.isValid(kind, selectionSize: selectionSize) {
+                    result.append(Annotation(kind: kind, color: color, lineWidth: lineWidth))
+                }
+            case let .editing(editedID):
+                if let existing = result.first(where: { $0.id == editedID }) {
+                    result = AnnotationEditor.replacing(
+                        AnnotationEditor.updatingText(existing, string: draft), in: result
+                    )
+                }
+            }
+        }
+        return .init(annotations: result, selectedAnnotationID: id)
+    }
+
     static func doubleTapAction(
         at point: CGPoint,
         tool: AnnotationTool?,
@@ -794,6 +823,20 @@ struct SelectionView: View {
         }
         if let id = AnnotationEditor.hitTest(annotations: annotations, point: normalizedPoint, selectionSize: selection.size),
            let annotation = annotations.first(where: { $0.id == id }) {
+            if let session = textEditSession {
+                let state = Self.documentAfterSelectingAnnotation(
+                    id: id,
+                    session: session,
+                    draft: textEditDraft,
+                    annotations: annotations,
+                    color: annotationColor,
+                    fontSize: annotationFontSize.pt,
+                    lineWidth: annotationWidth.pt,
+                    selectionSize: selection.size
+                )
+                cancelTextEdit()
+                commitAnnotationState(annotations: state.annotations, selectedAnnotationID: id)
+            }
             if case .text = annotation.kind {
                 if textTapSequence.press(id: id, at: Date()) {
                     beginTextEdit(.editing(id), selection: selection)
