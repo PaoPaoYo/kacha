@@ -60,6 +60,8 @@ struct SelectionView: View {
     @State private var textEditSession: TextEditSession?
     /// 文本编辑草稿（输入框绑定）
     @State private var textEditDraft: String = ""
+    @State private var textEditWidth: CGFloat?
+    @State private var textWidthDragStart: CGFloat?
     @State private var textTapSequence = TextAnnotationTapSequence()
     /// 模糊工具半径（pt，4...20）：固化进每笔标注（撤销后不受后续调节影响）；@AppStorage 跨会话记忆
     @AppStorage("blurRadius") private var blurRadius: Double = 8
@@ -102,25 +104,32 @@ struct SelectionView: View {
         color: RGBA,
         fontSize: CGFloat,
         lineWidth: CGFloat,
-        selectionSize: CGSize
+        selectionSize: CGSize,
+        width: CGFloat? = nil
     ) -> AnnotationDocumentState {
         var result = annotations
         if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             switch session {
             case let .creating(at):
-                let kind = Annotation.Kind.text(at: at, string: draft, fontSize: fontSize)
+                let kind = Annotation.Kind.text(at: at, string: draft, fontSize: fontSize, width: width)
                 if AnnotationGeometry.isValid(kind, selectionSize: selectionSize) {
                     result.append(Annotation(kind: kind, color: color, lineWidth: lineWidth))
                 }
             case let .editing(editedID):
                 if let existing = result.first(where: { $0.id == editedID }) {
                     result = AnnotationEditor.replacing(
-                        AnnotationEditor.updatingText(existing, string: draft), in: result
+                        AnnotationEditor.updatingText(existing, string: draft, width: width), in: result
                     )
                 }
             }
         }
         return .init(annotations: result, selectedAnnotationID: id)
+    }
+
+    static func inputWidth(at rightEdge: CGFloat, anchor: CGPoint, selection: CGRect, fontSize: CGFloat) -> CGFloat {
+        let originX = selection.minX + anchor.x * selection.width
+        let available = selection.maxX - originX
+        return min(max(rightEdge - originX, min(fontSize, available)), available) / selection.width
     }
 
     static func doubleTapAction(
@@ -832,7 +841,8 @@ struct SelectionView: View {
                     color: annotationColor,
                     fontSize: annotationFontSize.pt,
                     lineWidth: annotationWidth.pt,
-                    selectionSize: selection.size
+                    selectionSize: selection.size,
+                    width: textEditWidth
                 )
                 cancelTextEdit()
                 commitAnnotationState(annotations: state.annotations, selectedAnnotationID: id)
@@ -912,14 +922,17 @@ struct SelectionView: View {
     private func beginTextEdit(_ session: TextEditSession, selection: CGRect) {
         cancelAnnotationEdit()
         clearAnnotationSelection()
+        textWidthDragStart = nil
         textEditSession = session
         switch session {
         case .creating:
             textEditDraft = ""
+            textEditWidth = nil
         case let .editing(id):
             if let annotation = annotations.first(where: { $0.id == id }),
-               case let .text(_, string, _, _) = annotation.kind {
+               case let .text(_, string, _, width) = annotation.kind {
                 textEditDraft = string
+                textEditWidth = width
                 commitAnnotationState(annotations: annotations, selectedAnnotationID: id)
             } else {
                 textEditSession = nil
@@ -934,13 +947,17 @@ struct SelectionView: View {
         guard let session = textEditSession else { return }
         textEditSession = nil
         let trimmed = textEditDraft
+        let width = textEditWidth
         textEditDraft = ""
+        textEditWidth = nil
+        textWidthDragStart = nil
         switch session {
         case let .creating(at):
             let kind = Annotation.Kind.text(
                 at: at,
                 string: trimmed,
-                fontSize: annotationFontSize.pt
+                fontSize: annotationFontSize.pt,
+                width: width
             )
             guard AnnotationGeometry.isValid(kind, selectionSize: selection.size) else { return }
             let annotation = Annotation(kind: kind, color: annotationColor, lineWidth: annotationWidth.pt)
@@ -953,7 +970,7 @@ struct SelectionView: View {
                     selectedAnnotationID: nil
                 )
             } else {
-                let updated = AnnotationEditor.updatingText(existing, string: trimmed)
+                let updated = AnnotationEditor.updatingText(existing, string: trimmed, width: width)
                 commitAnnotationState(
                     annotations: AnnotationEditor.replacing(updated, in: annotations),
                     selectedAnnotationID: id
@@ -965,6 +982,8 @@ struct SelectionView: View {
     private func cancelTextEdit() {
         textEditSession = nil
         textEditDraft = ""
+        textEditWidth = nil
+        textWidthDragStart = nil
     }
 
     private func updateAnnotationFontSize(_ size: AnnotationFontSize) {
@@ -999,12 +1018,7 @@ struct SelectionView: View {
                case let .text(_, _, size, _) = a.kind { return size }
             return annotationFontSize.pt
         }()
-        let fixedWidth: CGFloat? = {
-            if case let .editing(id) = session,
-               let a = annotations.first(where: { $0.id == id }),
-               case let .text(_, _, _, width) = a.kind { return width }
-            return nil
-        }()
+        let fixedWidth = textEditWidth
         let layoutRect = AnnotationTextLayout.localRect(
             at: anchor,
             string: textEditDraft.isEmpty ? "A" : textEditDraft,
@@ -1043,6 +1057,29 @@ struct SelectionView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 2)
                 .stroke(Color(nsColor: .controlAccentColor), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .overlay(alignment: .trailing) {
+            Circle()
+                .fill(Color(nsColor: .controlAccentColor))
+                .frame(width: 8, height: 8)
+                .frame(width: 16, height: editorHeight)
+                .contentShape(Rectangle())
+                .offset(x: 8)
+                .gesture(
+                    DragGesture(minimumDistance: 1, coordinateSpace: .named("sel"))
+                        .onChanged { value in
+                            if textWidthDragStart == nil { textWidthDragStart = layoutRect.maxX }
+                            textEditWidth = Self.inputWidth(
+                                at: (textWidthDragStart ?? layoutRect.maxX) + value.translation.width,
+                                anchor: anchor,
+                                selection: sel,
+                                fontSize: fontSize
+                            )
+                        }
+                        .onEnded { _ in textWidthDragStart = nil }
+                )
+                .accessibilityLabel("调整文本宽度")
         }
         .position(x: layoutRect.midX, y: layoutRect.minY + editorHeight / 2)
     }

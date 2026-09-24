@@ -120,11 +120,11 @@ struct AnnotationEditor {
     }
 
     /// 替换文本内容（保留 id/颜色/字号/锚点）
-    static func updatingText(_ annotation: Annotation, string: String) -> Annotation {
-        guard case let .text(at, _, fontSize, width) = annotation.kind else { return annotation }
+    static func updatingText(_ annotation: Annotation, string: String, width: CGFloat? = nil) -> Annotation {
+        guard case let .text(at, _, fontSize, existingWidth) = annotation.kind else { return annotation }
         return Annotation(
             id: annotation.id,
-            kind: .text(at: at, string: string, fontSize: fontSize, width: width),
+            kind: .text(at: at, string: string, fontSize: fontSize, width: width ?? existingWidth),
             color: annotation.color,
             lineWidth: annotation.lineWidth
         )

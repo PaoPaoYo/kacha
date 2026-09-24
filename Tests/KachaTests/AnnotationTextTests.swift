@@ -93,6 +93,30 @@ final class AnnotationTextTests: XCTestCase {
         XCTAssertEqual(result.id, text.id)
     }
 
+    func test_editingTextPersistsResizedWidth() {
+        let text = Annotation(
+            kind: .text(at: CGPoint(x: 0.1, y: 0.1), string: "before", fontSize: 24, width: 0.5),
+            color: .green,
+            lineWidth: 4
+        )
+
+        let updated = AnnotationEditor.updatingText(text, string: "after", width: 0.3)
+        guard case let .text(_, string, _, width) = updated.kind else {
+            return XCTFail("expected text")
+        }
+        XCTAssertEqual(string, "after")
+        XCTAssertEqual(width, 0.3)
+        XCTAssertEqual(updated.id, text.id)
+    }
+
+    func test_inputWidthHandleClampsToFontAndSelectionRightEdge() {
+        let selection = CGRect(x: 100, y: 50, width: 400, height: 300)
+        let anchor = CGPoint(x: 0.2, y: 0.2)
+        XCTAssertEqual(SelectionView.inputWidth(at: 200, anchor: anchor, selection: selection, fontSize: 24), 0.06, accuracy: 0.0001)
+        XCTAssertEqual(SelectionView.inputWidth(at: 340, anchor: anchor, selection: selection, fontSize: 24), 0.4, accuracy: 0.0001)
+        XCTAssertEqual(SelectionView.inputWidth(at: 600, anchor: anchor, selection: selection, fontSize: 24), 0.8, accuracy: 0.0001)
+    }
+
     func test_updatingTextPreservesIdAndFontSize() {
         let text = Annotation(
             kind: .text(at: CGPoint(x: 0.1, y: 0.1), string: "old", fontSize: 24, width: 0.4),

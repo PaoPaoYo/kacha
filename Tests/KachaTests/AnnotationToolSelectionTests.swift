@@ -69,6 +69,26 @@ final class AnnotationToolSelectionTests: XCTestCase {
         XCTAssertTrue(state.annotations.contains { if case .text(_, "new text", _, _) = $0.kind { return true }; return false })
     }
 
+    func test_selectingExistingTextSavesResizedDraftWidth() {
+        let existing = Annotation(kind: .text(at: CGPoint(x: 0.5, y: 0.5), string: "old", fontSize: 24), color: .black, lineWidth: 4)
+        let state = SelectionView.documentAfterSelectingAnnotation(
+            id: existing.id,
+            session: .creating(at: CGPoint(x: 0.1, y: 0.1)),
+            draft: "new text",
+            annotations: [existing],
+            color: .red,
+            fontSize: 24,
+            lineWidth: 4,
+            selectionSize: CGSize(width: 400, height: 300),
+            width: 0.35
+        )
+
+        guard case let .text(_, _, _, width) = state.annotations.last?.kind else {
+            return XCTFail("expected text")
+        }
+        XCTAssertEqual(width, 0.35)
+    }
+
     func test_selectingExistingTextWhileCreatingDiscardsBlankDraft() {
         let existing = Annotation(kind: .text(at: CGPoint(x: 0.5, y: 0.5), string: "old", fontSize: 24), color: .black, lineWidth: 4)
         let state = SelectionView.documentAfterSelectingAnnotation(
