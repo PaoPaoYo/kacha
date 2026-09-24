@@ -8,14 +8,16 @@ final class CaptureCoordinator {
 
     private let captureService = ScreenCaptureService()
     private let overlay = OverlayController()
+    private var scrollingSession: ScrollingCaptureSession?
     private var isRunning = false
 
     func start() async {
-        guard !isRunning else { return }
+        guard !isRunning, scrollingSession == nil else { return }
         isRunning = true
         defer { isRunning = false }
 
         do {
+            let frontmostApp = NSWorkspace.shared.frontmostApplication
             let session = try await captureService.captureSession()
             overlay.show(frames: session.frames, windowsByScreen: session.windowsByScreen, onCapture: { image, action, globalFrame in
                 switch action {
@@ -29,11 +31,39 @@ final class CaptureCoordinator {
                     PinWindowController.shared.pin(image, frame: globalFrame)
                     NSSound(named: NSSound.Name("Tink"))?.play()
                 }
+            }, onScroll: { screen, selection in
+                self.beginScrolling(screen: screen, selection: selection, returningTo: frontmostApp)
             }, onCancel: {})
         } catch CaptureError.noPermission {
             presentPermissionGuide()
         } catch {
             presentError(error)
+        }
+    }
+
+    private func beginScrolling(screen: NSScreen, selection: CGRect, returningTo app: NSRunningApplication?) {
+        let session = ScrollingCaptureSession(screen: screen, selection: selection, onDismiss: { [weak self] in
+            self?.scrollingSession = nil
+        }, onOutput: { [weak self] image, action in
+            switch action {
+            case .copy:
+                ClipboardService.write(image)
+                NSSound(named: NSSound.Name("Tink"))?.play()
+            case .save:
+                self?.saveToFile(image)
+            case .pin:
+                break
+            }
+        })
+        scrollingSession = session
+        app?.activate()
+        Task {
+            do {
+                try await session.start()
+            } catch {
+                scrollingSession = nil
+                if !session.isFinished { presentError(error) }
+            }
         }
     }
 

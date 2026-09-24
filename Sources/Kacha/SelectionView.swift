@@ -17,6 +17,7 @@ struct SelectionView: View {
     let onSave: (CGRect, CGFloat, [Annotation]) -> Void
     /// 钉图时回调：屏幕局部 point 选区（有效性已过滤）+ 圆角半径（point，0 = 直角）+ 已完成标注
     let onPin: (CGRect, CGFloat, [Annotation]) -> Void
+    let onScroll: (CGRect) -> Void
     let onCancel: () -> Void
 
     private enum Phase {
@@ -534,6 +535,12 @@ struct SelectionView: View {
         guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection) else { return }
         if textEditSession != nil { commitTextEdit() }
         onPin(selection, CGFloat(cornerRadius), annotations)
+    }
+
+    private func startScrollingCapture() {
+        guard phase == .adjusting, dragStart == nil, SelectionGeometry.isValid(selection),
+              annotations.isEmpty, textEditSession == nil else { return }
+        onScroll(selection)
     }
 
     /// 撤销一个已提交标注状态；无历史时不执行任何操作。
@@ -1145,12 +1152,14 @@ struct SelectionView: View {
                        anchor: CGPoint(x: group.right, y: group.bottom),
                        canUndo: annotationHistory.canUndo,
                        canDelete: selectedAnnotation != nil,
+                       canScroll: annotations.isEmpty && textEditSession == nil,
                        selectedAnnotation: selectedAnnotation,
                        onColorChange: updateAnnotationColor,
                        onLineWidthChange: updateAnnotationWidth,
                        onFontSizeChange: updateAnnotationFontSize,
                        onUndo: undoLastAnnotation,
                        onDelete: removeSelectedAnnotation,
+                       onScroll: startScrollingCapture,
                        onSave: save,
                        onPin: pin,
                        onCopy: confirm)
@@ -1855,12 +1864,14 @@ private struct CaptureToolbar: View {
     /// 撤销可用（annotations 非空）：空栈时整钮不渲染（原 40% 置灰删除）
     let canUndo: Bool
     let canDelete: Bool
+    let canScroll: Bool
     let selectedAnnotation: Annotation?
     let onColorChange: (RGBA) -> Void
     let onLineWidthChange: (AnnotationWidth) -> Void
     let onFontSizeChange: (AnnotationFontSize) -> Void
     let onUndo: () -> Void
     let onDelete: () -> Void
+    let onScroll: () -> Void
     let onSave: () -> Void
     let onPin: () -> Void
     let onCopy: () -> Void
@@ -2015,6 +2026,14 @@ private struct CaptureToolbar: View {
             separator
             // 动作钮：与其他钮统一 24×24 无底色纯图标规格（无选中态），accessibilityLabel 保可读性；
             // 钉图钮固定在保存钮左（V4）
+            Button(action: onScroll) {
+                Image(systemName: "rectangle.stack.badge.plus")
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canScroll)
+            .help(canScroll ? "长截图" : "请先清除标注再开始长截图")
+            .accessibilityLabel("长截图")
             ToolbarIconButton(symbol: "pin",
                               selected: false,
                               accessibilityLabel: "钉图",
