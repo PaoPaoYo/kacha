@@ -240,6 +240,10 @@ struct SelectionView: View {
         .onChange(of: activeAnnotationEdit) { _, new in
             cursorState.annotationEditTarget = new
         }
+        .onChange(of: textEditSession) { _, new in
+            // 文本编辑态源同步：编辑中 Delete 键归输入框（monitor 据此放行，不删标注）
+            cursorState.isTextEditing = new != nil
+        }
         .onChange(of: geo.size.height) { _, new in
             cursorState.viewHeight = new
         }
@@ -276,15 +280,19 @@ struct SelectionView: View {
                 return .handled
             }
             .onKeyPress(.delete) {
+                // 编辑中 Delete 属输入框（与 keyDown monitor 同一规则；此路径正常不会收到）
+                guard textEditSession == nil else { return .ignored }
                 removeSelectedAnnotation()
                 return .handled
             }
             .onKeyPress(.deleteForward) {
+                guard textEditSession == nil else { return .ignored }
                 removeSelectedAnnotation()
                 return .handled
             }
             .onReceive(NotificationCenter.default.publisher(for: .kachaDeleteSelectedAnnotation)) { _ in
                 // keyDown local monitor 路径：点击选中后焦点常不在 focusable 视图，onKeyPress 收不到
+                guard textEditSession == nil else { return }
                 removeSelectedAnnotation()
             }
             .onReceive(NotificationCenter.default.publisher(for: .kachaCancelOverlay)) { notification in
@@ -413,6 +421,7 @@ struct SelectionView: View {
         cursorState.selectedAnnotation = selectedAnnotation
         cursorState.annotationEditTarget = activeAnnotationEdit
         cursorState.annotations = annotations
+        cursorState.isTextEditing = textEditSession != nil
         cursorState.blurWidth = CGFloat(blurPenWidth)
         // 光标矩形初值（appear 时选区未定，toolbarRect/panelBand 均 .zero）
         syncPanelBand(sel: selection, bounds: bounds)
@@ -431,7 +440,8 @@ struct SelectionView: View {
             switch Self.keyCommand(
                 keyCode: event.keyCode,
                 modifiers: event.modifierFlags,
-                hasSelectedAnnotation: cursorState.selectedAnnotation != nil
+                hasSelectedAnnotation: cursorState.selectedAnnotation != nil,
+                isTextEditing: cursorState.isTextEditing
             ) {
             case .deleteSelectedAnnotation:
                 NotificationCenter.default.post(name: .kachaDeleteSelectedAnnotation, object: nil)
@@ -448,16 +458,28 @@ struct SelectionView: View {
 
     /// 覆盖窗按键命令（纯决策，便于单测）：仅在有选中标注时，Delete/Forward Delete 且无
     /// ⌘/⌥/⌃ 修饰 → 删除。其余键（含 Return、带修饰组合）返回 nil 交由原路径处理。
+    /// isTextEditing：文本输入框持有键盘期间，Delete/Forward Delete 是「删一个字符」，
+    /// 必须原样放行给 NSTextView（曾被误判为删除标注：标注被删而编辑会话仍在，输入框按
+    /// 已不存在的标注定位 → 瞬移到选区左上角，提交时又因对象已删而整条消失）
     static func keyCommand(
         keyCode: UInt16,
         modifiers: NSEvent.ModifierFlags,
-        hasSelectedAnnotation: Bool
+        hasSelectedAnnotation: Bool,
+        isTextEditing: Bool = false
     ) -> SelectionKeyCommand? {
         if keyCode == UInt16(kVK_Escape) { return .cancelOverlay }
+        guard !isTextEditing else { return nil }
         guard hasSelectedAnnotation else { return nil }
         guard keyCode == UInt16(kVK_Delete) || keyCode == UInt16(kVK_ForwardDelete) else { return nil }
         guard modifiers.intersection([.command, .option, .control]).isEmpty else { return nil }
         return .deleteSelectedAnnotation
+    }
+
+    /// 删除标注 id 后，编辑会话是否应随之关闭（被删的正是编辑中的那条）：会话仍指向已删对象时
+    /// 输入框会按缺失标注回退到选区左上角，故删除动作与关会话必须同一次状态提交
+    static func closesTextEditSession(removing id: Annotation.ID, session: TextEditSession?) -> Bool {
+        guard case let .editing(editing) = session else { return false }
+        return editing == id
     }
 
     // MARK: 状态推算
@@ -917,6 +939,11 @@ struct SelectionView: View {
 
     private func removeSelectedAnnotation() {
         guard let selectedAnnotation else { return }
+        // 删掉的正是编辑中的那条时，先关闭编辑会话（同一状态提交内完成）：仅删对象而留下
+        // 会话，输入框会因找不到标注而回退到选区左上角（瞬移），提交时对象已不在又整条丢失
+        if Self.closesTextEditSession(removing: selectedAnnotation.id, session: textEditSession) {
+            cancelTextEdit()
+        }
         commitAnnotationState(
             annotations: AnnotationEditor.removing(id: selectedAnnotation.id, from: annotations),
             selectedAnnotationID: nil
@@ -1591,6 +1618,9 @@ private final class CursorState {
     var tool: AnnotationTool?
     var selectedAnnotation: Annotation?
     var annotationEditTarget: AnnotationEditTarget?
+    /// 文本编辑会话进行中（输入框占用键盘）：Delete/Forward Delete 归输入框删字符，
+    /// 不得被解释为「删除选中标注」——monitor 每次读到最新值
+    var isTextEditing = false
     /// 当前文档标注快照：select 悬停 hitTest 用（与 click 路由同源）
     var annotations: [Annotation] = []
     /// 面板展开期间的光标带（主行矩形向上扩 60pt，见 panelBand）；全收起时 .zero
