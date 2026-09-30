@@ -150,13 +150,34 @@ final class AnnotationTextTests: XCTestCase {
         XCTAssertEqual(fontSize, 36)
     }
 
-    func test_fontSizeSteps() {
-        XCTAssertEqual(AnnotationFontSize.small.pt, 16)
-        XCTAssertEqual(AnnotationFontSize.medium.pt, 24)
-        XCTAssertEqual(AnnotationFontSize.large.pt, 36)
-        XCTAssertEqual(AnnotationFontSize.nearest(17), .small)
-        XCTAssertEqual(AnnotationFontSize.nearest(24), .medium)
-        XCTAssertEqual(AnnotationFontSize.nearest(35), .large)
+    func test_fontSizeRangeIsOneThroughNinetyNine() {
+        XCTAssertEqual(AnnotationFontSize.minimum, 1)
+        XCTAssertEqual(AnnotationFontSize.maximum, 99)
+        XCTAssertEqual(AnnotationFontSize.defaultValue, 24)
+        XCTAssertEqual(AnnotationFontSize.clamp(1), 1)
+        XCTAssertEqual(AnnotationFontSize.clamp(24), 24)
+        XCTAssertEqual(AnnotationFontSize.clamp(99), 99)
+        // 越界收敛 + 步进取整（滑条 step 1）
+        XCTAssertEqual(AnnotationFontSize.clamp(0), 1)
+        XCTAssertEqual(AnnotationFontSize.clamp(-8), 1)
+        XCTAssertEqual(AnnotationFontSize.clamp(100), 99)
+        XCTAssertEqual(AnnotationFontSize.clamp(240), 99)
+        XCTAssertEqual(AnnotationFontSize.clamp(36.4), 36)
+        XCTAssertEqual(AnnotationFontSize.clamp(36.6), 37)
+    }
+
+    func test_updatingFontSizeClampsOutOfRangeValues() {
+        let text = Annotation(
+            kind: .text(at: CGPoint(x: 0.5, y: 0.5), string: "size", fontSize: 16),
+            color: .black,
+            lineWidth: 4
+        )
+        guard case let .text(_, _, tooLarge, _) = AnnotationEditor.updatingFontSize(text, fontSize: 200).kind,
+              case let .text(_, _, tooSmall, _) = AnnotationEditor.updatingFontSize(text, fontSize: 0).kind else {
+            return XCTFail("expected text")
+        }
+        XCTAssertEqual(tooLarge, 99)
+        XCTAssertEqual(tooSmall, 1)
     }
 
     func test_textLayout_wrapsWithinMaxWidth() {

@@ -130,12 +130,13 @@ struct AnnotationEditor {
         )
     }
 
-    /// 替换字号（保留 id/颜色/文案/锚点）
+    /// 替换字号（保留 id/颜色/文案/锚点）；入参经 AnnotationFontSize.clamp 归一，
+    /// 越界值（滑条外调用/旧数据）不会落库
     static func updatingFontSize(_ annotation: Annotation, fontSize: CGFloat) -> Annotation {
         guard case let .text(at, string, _, width) = annotation.kind else { return annotation }
         return Annotation(
             id: annotation.id,
-            kind: .text(at: at, string: string, fontSize: fontSize, width: width),
+            kind: .text(at: at, string: string, fontSize: AnnotationFontSize.clamp(fontSize), width: width),
             color: annotation.color,
             lineWidth: annotation.lineWidth
         )

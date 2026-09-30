@@ -44,26 +44,16 @@ enum AnnotationWidth: CaseIterable {
     }
 }
 
-/// 文本字号三档（绝对 pt，不随选区缩放）
-enum AnnotationFontSize: CaseIterable, Equatable {
-    case small, medium, large
-    var pt: CGFloat {
-        switch self {
-        case .small: 16
-        case .medium: 24
-        case .large: 36
-        }
-    }
-    /// 工具栏示意字号标签
-    var label: String {
-        switch self {
-        case .small: "16"
-        case .medium: "24"
-        case .large: "36"
-        }
-    }
-    static func nearest(_ pt: CGFloat) -> AnnotationFontSize {
-        allCases.min { abs($0.pt - pt) < abs($1.pt - pt) } ?? .medium
+/// 文本字号（绝对 pt，不随选区缩放）：工具栏滑动条连续调节，取整步进 1。
+/// 单一区间源：滑条范围、默认值与所有写入路径的归一都经此处，避免出现越界字号
+enum AnnotationFontSize {
+    static let minimum: CGFloat = 1
+    static let maximum: CGFloat = 99
+    /// 新建文本的默认字号
+    static let defaultValue: CGFloat = 24
+    /// 归一化到 [minimum, maximum] 并取整（滑条 step 1）
+    static func clamp(_ pt: CGFloat) -> CGFloat {
+        min(max(pt.rounded(), minimum), maximum)
     }
 }
 

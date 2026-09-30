@@ -55,8 +55,8 @@ struct SelectionView: View {
     @State private var annotationColor: RGBA = .red
     /// 当前标注粗细（三档；blur 工具不用此值，见 blurPenWidth）
     @State private var annotationWidth: AnnotationWidth = .medium
-    /// 文本字号三档（text 工具新建默认；选中文本时改对象上的 fontSize）
-    @State private var annotationFontSize: AnnotationFontSize = .medium
+    /// 文本字号（滑动条 1...99 连续调节；text 工具新建默认；选中文本时改对象上的 fontSize）
+    @State private var annotationFontSize: CGFloat = AnnotationFontSize.defaultValue
     /// 文本编辑会话：creating = 点选新建；editing = 双击改已有文案
     @State private var textEditSession: TextEditSession?
     /// 文本编辑草稿（输入框绑定）
@@ -847,7 +847,7 @@ struct SelectionView: View {
                     draft: textEditDraft,
                     annotations: annotations,
                     color: annotationColor,
-                    fontSize: annotationFontSize.pt,
+                    fontSize: annotationFontSize,
                     lineWidth: annotationWidth.pt,
                     selectionSize: selection.size,
                     width: textEditWidth
@@ -964,7 +964,7 @@ struct SelectionView: View {
             let kind = Annotation.Kind.text(
                 at: at,
                 string: trimmed,
-                fontSize: annotationFontSize.pt,
+                fontSize: annotationFontSize,
                 width: width
             )
             guard AnnotationGeometry.isValid(kind, selectionSize: selection.size) else { return }
@@ -994,10 +994,13 @@ struct SelectionView: View {
         textWidthDragStart = nil
     }
 
-    private func updateAnnotationFontSize(_ size: AnnotationFontSize) {
-        annotationFontSize = size
+    /// 字号写入单一出口（滑条拖动逐帧调用）：先归一/落状态（作为新建默认值），
+    /// 再实时改写选中文本对象的字号；未选中文本时仅更新默认值
+    private func updateAnnotationFontSize(_ size: CGFloat) {
+        let clamped = AnnotationFontSize.clamp(size)
+        annotationFontSize = clamped
         guard let selectedAnnotation, case .text = selectedAnnotation.kind else { return }
-        let updated = AnnotationEditor.updatingFontSize(selectedAnnotation, fontSize: size.pt)
+        let updated = AnnotationEditor.updatingFontSize(selectedAnnotation, fontSize: clamped)
         commitAnnotationState(
             annotations: AnnotationEditor.replacing(updated, in: annotations),
             selectedAnnotationID: updated.id
@@ -1024,7 +1027,7 @@ struct SelectionView: View {
             if case let .editing(id) = session,
                let a = annotations.first(where: { $0.id == id }),
                case let .text(_, _, size, _) = a.kind { return size }
-            return annotationFontSize.pt
+            return annotationFontSize
         }()
         let fixedWidth = textEditWidth
         let layoutRect = AnnotationTextLayout.localRect(
@@ -1858,7 +1861,7 @@ private struct CaptureToolbar: View {
     @Binding var tool: AnnotationTool?
     @Binding var color: RGBA
     @Binding var lineWidth: AnnotationWidth
-    @Binding var fontSize: AnnotationFontSize
+    @Binding var fontSize: CGFloat
     @Binding var cornerRadius: Double
     /// 模糊工具专属双滑块值（半径 4...20 / 笔宽 8...80），仅 blur 面板消费
     @Binding var blurRadius: Double
@@ -1883,7 +1886,7 @@ private struct CaptureToolbar: View {
     let selectedAnnotation: Annotation?
     let onColorChange: (RGBA) -> Void
     let onLineWidthChange: (AnnotationWidth) -> Void
-    let onFontSizeChange: (AnnotationFontSize) -> Void
+    let onFontSizeChange: (CGFloat) -> Void
     let onUndo: () -> Void
     let onDelete: () -> Void
     let onScroll: () -> Void
@@ -1904,17 +1907,23 @@ private struct CaptureToolbar: View {
         guard let selectedAnnotation else { return lineWidth }
         return AnnotationWidth.allCases.first { $0.pt == selectedAnnotation.lineWidth } ?? lineWidth
     }
-    /// 样式面板下行：text 工具/选中文本显示字号档，否则显示线宽档
+    /// 样式面板下行：text 工具/选中文本显示字号滑条，否则显示线宽档
     private var isTextStyleContext: Bool {
         if tool == .text { return true }
         if case .text = selectedAnnotation?.kind { return true }
         return false
     }
-    private var displayedFontSize: AnnotationFontSize {
+    /// 当前生效字号：选中文本时取其对象字号（旧数据可能越界，读取即归一），否则取新建默认值
+    private var displayedFontSize: CGFloat {
         if let selectedAnnotation, case let .text(_, _, size, _) = selectedAnnotation.kind {
-            return AnnotationFontSize.nearest(size)
+            return AnnotationFontSize.clamp(size)
         }
         return fontSize
+    }
+    /// 字号滑条双向绑定：读 = 当前生效字号；写 = 走 onFontSizeChange 单一出口
+    /// （与色板直接回调一致——选中文本时拖动即改写对象，未选中时改写新建默认值）
+    private var fontSizeBinding: Binding<CGFloat> {
+        Binding(get: { displayedFontSize }, set: { onFontSizeChange($0) })
     }
 
     var body: some View {
@@ -2185,9 +2194,11 @@ private struct CaptureToolbar: View {
             if showStylePanel, tool != .blur,
                let anchorX = panelAnchors[PanelID.style.rawValue] {
                 panelSlot(anchorX: anchorX) {
-                    // 色板+粗细合并样式面板（两行 VStack，同 blur 双滑块面板节奏）：
-                    // 上行 8 色板（当前色 ring）、下行 3 档粗细（当前档 ring）；
-                    // 选色/选档即时生效不收起——收起沿用现有交互（点样式钮 / 互斥切面板）。
+                    // 色板+样式合并面板（两行 VStack，同 blur 双滑块面板节奏）：
+                    // 上行 8 色板（当前色 ring）、下行按上下文——文本上下文为字号滑条（1...99），
+                    // 其他为 3 档粗细（当前档 ring）；
+                    // 选色/选档即时生效不收起——收起沿用现有交互（点样式钮 / 互斥切面板）；
+                    // 字号滑条同理：拖动实时生效且不收起（与圆角滑条/模糊双滑块一致）。
                     // 内容额外 .padding(.horizontal, 6)：8 色板首尾色与容器边缘留出明显
                     // 间隙（原 10pt 留白下首尾色几乎贴边），粗细行同样受益
                     panelCapsuleAdaptive {
@@ -2198,11 +2209,7 @@ private struct CaptureToolbar: View {
                                 }
                             }
                             if isTextStyleContext {
-                                HStack(spacing: 6) {
-                                    ForEach(AnnotationFontSize.allCases, id: \.pt) { s in
-                                        fontSizeButton(s)
-                                    }
-                                }
+                                fontSizeSliderRow
                             } else {
                                 HStack(spacing: 6) {
                                     ForEach(AnnotationWidth.allCases, id: \.pt) { w in
@@ -2386,23 +2393,20 @@ private struct CaptureToolbar: View {
         .buttonStyle(.plain)
     }
 
-    /// 字号档钮（文本上下文）：显示 16/24/36 标签，当前档 accent 描边
-    private func fontSizeButton(_ size: AnnotationFontSize) -> some View {
-        Button {
-            onFontSizeChange(size)
-        } label: {
-            Text(size.label)
-                .font(.system(size: 11, weight: .medium).monospacedDigit())
-                .frame(width: 28, height: 24)
-                .contentShape(Rectangle())
-                .overlay {
-                    if size == displayedFontSize {
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
-                    }
-                }
+    /// 字号滑条行（文本上下文）：替代原 16/24/36 三档按钮——「字号」标签 + 1...99 滑条（step 1）
+    /// + 等宽数字当前值。节奏与模糊双滑块面板一致（标签 12pt / 滑条 120 / 数值宽 24）；
+    /// 拖动经 fontSizeBinding 逐帧落库（选中文本即改对象，否则改新建默认值），不收起面板
+    private var fontSizeSliderRow: some View {
+        HStack(spacing: 8) {
+            Text("字号").font(.system(size: 12, weight: .medium))
+            Slider(value: fontSizeBinding,
+                   in: AnnotationFontSize.minimum...AnnotationFontSize.maximum,
+                   step: 1)
+                .frame(width: 120)
+            Text("\(Int(displayedFontSize))")
+                .font(.system(size: 12, weight: .medium).monospacedDigit())
+                .frame(width: 24)
         }
-        .buttonStyle(.plain)
     }
 }
 
