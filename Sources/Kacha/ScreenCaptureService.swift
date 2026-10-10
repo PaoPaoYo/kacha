@@ -116,7 +116,10 @@ final class ScreenCaptureService {
                                   shouldInterpolate: true, intent: .defaultIntent) else {
             throw CaptureError.captureFailed(underlying: NSError(domain: "kacha.screencapture", code: -1))
         }
-        return image
+        guard let bitmap = CaptureBitmap.detached(image) else {
+            throw CaptureError.captureFailed(underlying: NSError(domain: "kacha.bitmap", code: -1))
+        }
+        return bitmap
     }
 }
 

@@ -34,6 +34,7 @@ final class OverlayController {
                 backing: .buffered,
                 defer: false
             )
+            panel.isReleasedWhenClosed = false
             panel.level = .screenSaver
             panel.isOpaque = true
             panel.backgroundColor = .black
@@ -76,7 +77,7 @@ final class OverlayController {
     func dismissAll() {
         // 先广播再关窗：各屏 SelectionView 收到后立即移除光标 monitor（onDisappear 为兜底路径）
         NotificationCenter.default.post(name: .kachaOverlayDismissed, object: nil)
-        for panel in panels { panel.orderOut(nil) }
+        for panel in panels { CaptureWindowLifecycle.close(panel) }
         panels.removeAll()
     }
 
@@ -90,7 +91,7 @@ final class OverlayController {
         )
         // 选区屏局部 point 矩形（左上原点）→ AppKit 全局 frame（左下原点，钉图原位显示用）
         let globalFrame = PinWindowController.appkitFrame(fromLocal: pointRect, on: frame.screen)
-        if let cropped = frame.image.cropping(to: pixelRect) {
+        if let crop = frame.image.cropping(to: pixelRect), let cropped = CaptureBitmap.detached(crop) {
             // 标注先画进直角图（无标注时 renderer 原图直通），圆角化在其上 clip，
             // 保证「标注 + 圆角」并存时标注与底图一起被圆角裁切（与预览所见一致）
             let composited = AnnotationRenderer.composite(cropped, annotations: annotations, selectionPointWidth: pointRect.width)

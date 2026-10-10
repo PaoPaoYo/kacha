@@ -1,27 +1,35 @@
 import AppKit
-import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 
+/// 直接编码最终位图，避免 NSImage → TIFF → 再解码 → PNG 的额外整图副本。
 enum ClipboardService {
-    /// 把截图写进系统剪贴板（PNG + TIFF 两种类型）
     static func write(_ image: CGImage) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        // size 用像素尺寸：粘贴到多数应用时保持原始像素
-        let nsImage = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
-        guard let tiff = nsImage.tiffRepresentation else { return }
-        pasteboard.setData(tiff, forType: .tiff)
-        if let rep = NSBitmapImageRep(data: tiff),
-           let png = rep.representation(using: .png, properties: [:]) {
+        autoreleasepool {
+            guard let png = pngData(image) else { return }
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
             pasteboard.setData(png, forType: .png)
+            // 保留 TIFF 粘贴兼容性；顺序编码，两种格式不再彼此转换。
+            if let tiff = encodedData(image, type: UTType.tiff) {
+                pasteboard.setData(tiff, forType: .tiff)
+            }
         }
     }
 
-    /// PNG 数据编码（保存文件复用，与 write 的 PNG 分支同一链路）
     static func pngData(_ image: CGImage) -> Data? {
-        // size 用像素尺寸：与 write 一致，保持原始像素
-        let nsImage = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
-        guard let tiff = nsImage.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff) else { return nil }
-        return rep.representation(using: .png, properties: [:])
+        encodedData(image, type: .png)
+    }
+
+    static func encodedData(_ image: CGImage, type: UTType) -> Data? {
+        autoreleasepool {
+            let data = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(data, type.identifier as CFString, 1, nil) else {
+                return nil
+            }
+            CGImageDestinationAddImage(destination, image, nil)
+            guard CGImageDestinationFinalize(destination) else { return nil }
+            return data as Data
+        }
     }
 }

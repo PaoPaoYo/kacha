@@ -8,6 +8,8 @@ final class HotKeyCenter {
     /// 热键签名 'KACH'
     private static let signature: FourCharCode = 0x4B_41_43_48
     private nonisolated(unsafe) static var action: (() -> Void)?
+    private nonisolated(unsafe) static var scrollingEscapeAction: (() -> Void)?
+    private var scrollingEscapeRef: EventHotKeyRef?
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
     private var registration: Registration?
@@ -48,6 +50,27 @@ final class HotKeyCenter {
         Self.action = nil
     }
 
+    func registerScrollingEscape(action: @escaping () -> Void) -> Bool {
+        guard installHandlerIfNeeded() else { return false }
+        unregisterScrollingEscape()
+        var reference: EventHotKeyRef?
+        let id = EventHotKeyID(signature: Self.signature, id: 2)
+        guard RegisterEventHotKey(UInt32(kVK_Escape), 0, id,
+                                  GetApplicationEventTarget(), 0, &reference) == noErr,
+              let reference else { return false }
+        scrollingEscapeRef = reference
+        Self.scrollingEscapeAction = action
+        return true
+    }
+
+    func unregisterScrollingEscape() {
+        if let scrollingEscapeRef {
+            UnregisterEventHotKey(scrollingEscapeRef)
+            self.scrollingEscapeRef = nil
+        }
+        Self.scrollingEscapeAction = nil
+    }
+
     private func installHandlerIfNeeded() -> Bool {
         guard handlerRef == nil else { return true }
 
@@ -69,7 +92,11 @@ final class HotKeyCenter {
             guard id.signature == HotKeyCenter.signature else { return noErr }
             // Carbon 热键在主事件循环（主线程）派发
             MainActor.assumeIsolated {
-                HotKeyCenter.action?()
+                switch id.id {
+                case 1: HotKeyCenter.action?()
+                case 2: HotKeyCenter.scrollingEscapeAction?()
+                default: break
+                }
             }
             return noErr
         }, 1, &spec, nil, &handlerRef)

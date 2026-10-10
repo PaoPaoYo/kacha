@@ -35,10 +35,9 @@ struct SelectionView: View {
     @State private var adjustPoint: CGPoint = .zero
     /// 光标决策快照（引用类型：@State 持同一实例，monitor 闭包每次读到最新值）
     @State private var cursorState = CursorState()
-    /// NSEvent local monitor 令牌（onAppear 安装、onDisappear 移除）
-    @State private var cursorMonitor: Any?
-    /// Delete/Forward Delete keyDown 监听（不依赖 SwiftUI 焦点；与光标 monitor 同生命周期）
-    @State private var keyMonitor: Any?
+    /// 引用对象负责令牌生命周期，SwiftUI 状态历史不再保存原始 observer。
+    @State private var cursorMonitor = LocalEventMonitor()
+    @State private var keyMonitor = LocalEventMonitor()
     /// 悬停命中的窗口矩形（仅 idle 态更新；dragging 期间保持旧值供 onEnded 窗口分支读取）
     @State private var hoveredWindow: CGRect? = nil
     /// 输出圆角半径（point）：底部滑动条实时调整；@AppStorage 持久化到 UserDefaults，跨会话记忆上次值
@@ -70,8 +69,6 @@ struct SelectionView: View {
     @AppStorage("blurPenWidth") private var blurPenWidth: Double = 24
     /// 进行中的一笔标注（绘制手势期间持有；松开时 isValid 才入栈，随后清空）
     @State private var drawingAnnotation: Annotation?
-    /// 模糊预览图缓存（单条目，见 blurPreviewImage）
-    @State private var blurPreview = BlurPreviewCache()
     /// 收起式弹出面板开关（互斥：同一时间至多展开一个；面板经玻璃外浮层宿主 panelsHost 呈现）：
     /// showStylePanel = 色板+粗细合并样式面板（pen 系）/ showWidthPicker = blur 双滑块 / showRadiusSlider = 圆角
     @State private var showStylePanel = false
@@ -178,8 +175,8 @@ struct SelectionView: View {
     /// 整条链写在一个表达式会触发编译器「unable to type-check in reasonable time」
     private func overlayCanvas(in geo: GeometryProxy) -> some View {
         ZStack(alignment: .topLeading) {
-            Image(nsImage: NSImage(cgImage: frame.image, size: frame.screenPointSize))
-                .resizable()
+            CaptureImageView(image: frame.image)
+                .allowsHitTesting(false)
                 .frame(width: geo.size.width, height: geo.size.height)
 
             let maskSelection = validDragRect ?? ((phase != .adjusting) ? hoveredWindow : nil)
@@ -425,8 +422,11 @@ struct SelectionView: View {
         cursorState.blurWidth = CGFloat(blurPenWidth)
         // 光标矩形初值（appear 时选区未定，toolbarRect/panelBand 均 .zero）
         syncPanelBand(sel: selection, bounds: bounds)
-        cursorMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { event in
-            Self.applyCursor(event: event, state: cursorState, screen: frame.screen)
+        let state = cursorState
+        let screen = frame.screen
+        cursorMonitor.start(matching: [.mouseMoved, .leftMouseDragged]) { [weak state, weak screen] event in
+            guard let state, let screen else { return event }
+            Self.applyCursor(event: event, state: state, screen: screen)
             return event
         }
         installKeyMonitor()
@@ -435,20 +435,21 @@ struct SelectionView: View {
     /// Delete 键不依赖 SwiftUI focus：点击选中后 focusable 常失焦，onKeyPress 收不到。
     /// 与光标同一 local monitor 模式；命中时吞掉事件并广播，由 onReceive 执行删除。
     private func installKeyMonitor() {
-        removeKeyMonitor()
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        let state = cursorState
+        let screen = frame.screen
+        keyMonitor.start(matching: .keyDown) { [weak state, weak screen] event in
+            guard let state, let screen, event.window?.screen === screen else { return event }
             switch Self.keyCommand(
                 keyCode: event.keyCode,
                 modifiers: event.modifierFlags,
-                hasSelectedAnnotation: cursorState.selectedAnnotation != nil,
-                isTextEditing: cursorState.isTextEditing
+                hasSelectedAnnotation: state.selectedAnnotation != nil,
+                isTextEditing: state.isTextEditing
             ) {
             case .deleteSelectedAnnotation:
                 NotificationCenter.default.post(name: .kachaDeleteSelectedAnnotation, object: nil)
                 return nil
             case .cancelOverlay:
-                guard event.window?.screen === frame.screen else { return event }
-                NotificationCenter.default.post(name: .kachaCancelOverlay, object: frame.screen)
+                NotificationCenter.default.post(name: .kachaCancelOverlay, object: screen)
                 return nil
             case nil:
                 return event
@@ -618,49 +619,8 @@ struct SelectionView: View {
     /// 渲染在白边之后、move/绘制手势层之前；仅预览层不做命中（allowsHitTesting false 由调用方挂）。
     /// 白色标注先 stroke 1pt separator 外扩描边再上色，浅色截图中仍可见（规格约束，仅预览层）。
     private func annotationPreviewCanvas(sel: CGRect) -> some View {
-        Canvas { context, _ in
-            for a in displayedAnnotations + [drawingAnnotation].compactMap({ $0 }) {
-                var ctx = context
-                // path 产出选区局部坐标（原点 = 视图原点），Canvas 原点 = sel.minX：平移对齐
-                ctx.translateBy(x: -sel.minX, y: -sel.minY)
-                let path = Path(AnnotationGeometry.path(for: a.kind, in: sel, lineWidth: a.lineWidth))
-                if case let .blur(_, radius) = a.kind {
-                    // 高斯模糊：涂抹路径展宽为 clip，冻结帧按选区裁剪、CIGaussianBlur（每笔 radius × 像素比）
-                    // 后 1:1 绘制（与 AnnotationRenderer 输出同构；颜色不参与渲染，坐标为视图坐标 → 画到 sel）
-                    if let blurred = blurPreviewImage(in: sel, radius: radius) {
-                        ctx.clip(to: path.strokedPath(StrokeStyle(lineWidth: a.lineWidth,
-                                                                  lineCap: .round, lineJoin: .round)))
-                        ctx.draw(Image(decorative: blurred, scale: 1), in: sel)
-                    }
-                    continue
-                }
-                if case let .text(at, string, fontSize, width) = a.kind {
-                    // 预览用 SwiftUI Text（与导出同字号/同 maxWidth 折行语义）；不描边包围盒
-                    let local = AnnotationTextLayout.localRect(
-                        at: at, string: string, fontSize: fontSize, width: width, selection: sel
-                    )
-                    let textColor = Color(red: a.color.r, green: a.color.g, blue: a.color.b, opacity: a.color.a)
-                    let resolved = context.resolve(
-                        Text(string)
-                            .font(.system(size: fontSize))
-                            .foregroundStyle(textColor)
-                    )
-                    ctx.draw(resolved, in: local)
-                    continue
-                }
-                let color = Color(red: a.color.r, green: a.color.g, blue: a.color.b, opacity: a.color.a)
-                if a.color == .white {
-                    ctx.stroke(path, with: .color(Color(nsColor: .separatorColor)),
-                               style: StrokeStyle(lineWidth: a.lineWidth + 2, lineCap: .round, lineJoin: .round))
-                }
-                ctx.stroke(path, with: .color(color),
-                           style: StrokeStyle(lineWidth: a.lineWidth, lineCap: .round, lineJoin: .round))
-                if case .arrow = a.kind {
-                    // 线段子路径零面积对 eoFill 无副作用，与 Renderer 同构（stroke 后 fill 成实心头）
-                    ctx.fill(path, with: .color(color), style: FillStyle(eoFill: true))
-                }
-            }
-        }
+        CaptureAnnotationPreview(image: frame.image, pointSize: frame.screenPointSize,
+            selection: sel, annotations: displayedAnnotations + [drawingAnnotation].compactMap({ $0 }))
     }
 
     @ViewBuilder
@@ -1267,37 +1227,6 @@ struct SelectionView: View {
         drawingAnnotation = nil
     }
 
-    /// 模糊预览图（带单条目缓存）：依赖只有冻结帧、选区与半径，涂抹拖动期间三者不变，同键复用
-    /// （引用类型缓存：@State 持有不触发视图刷新，Canvas 绘制期只读）
-    private func blurPreviewImage(in sel: CGRect, radius: CGFloat) -> CGImage? {
-        if blurPreview.sel == sel, blurPreview.radius == radius, let cached = blurPreview.image { return cached }
-        let image = Self.makeBlurPreview(base: frame.image, pointSize: frame.screenPointSize, sel: sel, radius: radius)
-        blurPreview.sel = sel
-        blurPreview.radius = radius
-        blurPreview.image = image
-        return image
-    }
-
-    /// 预览与 AnnotationRenderer 输出同构：冻结帧按选区像素裁剪（CGImage 图像坐标，左上原点）→
-    /// CIGaussianBlur（每笔 radius pt × 像素/点），输出保持裁剪原分辨率（1:1 绘制无插值问题）。
-    /// nil = 裁剪/模糊失败（该笔预览跳过，输出层 AnnotationRenderer 仍正常）
-    private static func makeBlurPreview(base: CGImage, pointSize: CGSize, sel: CGRect, radius: CGFloat) -> CGImage? {
-        let pixelScale = CGFloat(base.width) / max(pointSize.width, 1)
-        guard pixelScale > 0 else { return nil }
-        let imageBounds = CGRect(x: 0, y: 0, width: base.width, height: base.height)
-        let crop = imageBounds.intersection(CGRect(x: sel.minX * pixelScale, y: sel.minY * pixelScale,
-                                                   width: sel.width * pixelScale, height: sel.height * pixelScale))
-        guard !crop.isEmpty, crop.width >= 1, crop.height >= 1,
-              let cropped = base.cropping(to: crop) else { return nil }
-        let ciImage = CIImage(cgImage: cropped)
-        let clamped = ciImage.clampedToExtent()
-        guard let filter = CIFilter(name: "CIGaussianBlur") else { return nil }
-        filter.setValue(clamped, forKey: kCIInputImageKey)
-        filter.setValue(radius * pixelScale, forKey: kCIInputRadiusKey)
-        let blurred = (filter.outputImage ?? clamped).cropped(to: ciImage.extent)
-        return AnnotationRenderer.sharedCIContext.createCGImage(blurred, from: ciImage.extent)
-    }
-
     /// 两点 min/max 的归一化矩形（x/y/w/h 由两点 min/max；clamp 由 normalizedPoint 逐角承担）
     private static func normalizedRect(from start: CGPoint, to point: CGPoint, in selection: CGRect) -> CGRect {
         let a = AnnotationGeometry.normalizedPoint(
@@ -1309,17 +1238,11 @@ struct SelectionView: View {
 
     /// 移除光标 monitor（幂等）：覆盖窗被 dismissAll 时经通知触发，onDisappear 兜底重复调用
     private func removeCursorMonitor() {
-        if let cursorMonitor {
-            NSEvent.removeMonitor(cursorMonitor)
-        }
-        cursorMonitor = nil
+        cursorMonitor.stop()
     }
 
     private func removeKeyMonitor() {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-        }
-        keyMonitor = nil
+        keyMonitor.stop()
     }
 
     // MARK: 光标（NSEvent monitor 单一决策点）
@@ -1599,14 +1522,6 @@ struct SelectionView: View {
         ringCursorCache[d] = cursor
         return cursor
     }
-}
-
-/// 模糊预览图的单条目缓存：引用类型，@State 持有不触发视图刷新
-///（涂抹拖动期间选区不变，Canvas 每帧重绘直接命中缓存，避免逐帧重复 CI 模糊）
-private final class BlurPreviewCache {
-    var sel: CGRect = .zero
-    var radius: CGFloat = 0
-    var image: CGImage?
 }
 
 /// 光标决策所用的可变快照：@State 持同一引用实例，monitor 闭包每次读到最新值

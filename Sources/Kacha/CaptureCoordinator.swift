@@ -43,6 +43,7 @@ final class CaptureCoordinator {
 
     private func beginScrolling(screen: NSScreen, selection: CGRect, toolbarAnchor: CGPoint, returningTo app: NSRunningApplication?) {
         let session = ScrollingCaptureSession(screen: screen, selection: selection, toolbarAnchor: toolbarAnchor, onDismiss: { [weak self] in
+            HotKeyCenter.shared.unregisterScrollingEscape()
             self?.scrollingSession = nil
         }, onOutput: { [weak self] image, action in
             switch action {
@@ -55,14 +56,19 @@ final class CaptureCoordinator {
                 break
             }
         })
+        guard HotKeyCenter.shared.registerScrollingEscape(action: { [weak session] in session?.cancel() }) else {
+            presentError(ScrollingEscapeRegistrationError())
+            return
+        }
         scrollingSession = session
         app?.activate()
         Task {
             do {
                 try await session.start()
             } catch {
-                scrollingSession = nil
-                if !session.isFinished { presentError(error) }
+                let wasCancelled = session.isFinished
+                session.cancel()
+                if !wasCancelled { presentError(error) }
             }
         }
     }
@@ -114,7 +120,11 @@ final class CaptureCoordinator {
     }
 }
 
-/// PNG 编码失败（理论不发生：CGImage→NSImage→TIFF→BitmapImageRep 链路稳定）
+private struct ScrollingEscapeRegistrationError: LocalizedError {
+    var errorDescription: String? { "无法注册长截图取消快捷键 Esc，请重试。" }
+}
+
+/// ImageIO 直接编码 PNG 失败。
 private struct PNGEncodeError: LocalizedError {
     var errorDescription: String? { "截图 PNG 编码失败" }
 }

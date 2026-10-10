@@ -70,8 +70,10 @@ struct PinView: View {
 
     var body: some View {
         GeometryReader { geo in
-            Image(decorative: image, scale: 1)
-                .resizable()
+            ZStack {
+                CaptureImageView(image: image).allowsHitTesting(false)
+                Color.clear
+            }
                 .frame(width: geo.size.width, height: geo.size.height)
                 .coordinateSpace(name: "pin")
                 .contentShape(Rectangle())
@@ -225,12 +227,16 @@ final class PinWindowController {
     func remove(_ panel: PinPanel) {
         guard panels.contains(where: { $0 === panel }) else { return }
         panels.removeAll { $0 === panel }
-        panel.orderOut(nil)
+        panel.onCloseHotkey = nil
+        CaptureWindowLifecycle.close(panel)
     }
 
     /// app 终止全清（KachaApp.applicationWillTerminate 调用）
     func closeAll() {
-        for panel in panels { panel.orderOut(nil) }
+        for panel in panels {
+            panel.onCloseHotkey = nil
+            CaptureWindowLifecycle.close(panel)
+        }
         panels.removeAll()
     }
 
